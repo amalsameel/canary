@@ -1,0 +1,25 @@
+# Copy this to `.canary.toml` in the directory you intend to `canary watch`.
+# All keys are optional; missing keys fall back to built-in defaults.
+
+[thresholds]
+drift_alert = 0.15            # any file above this cosine-distance triggers an alert
+drift_entry_point = 0.08      # entry-point files use a tighter threshold
+change_rate_window = 60       # seconds
+change_rate_limit = 10        # more than this many changes in the window triggers an alert
+max_file_size_bytes = 524288  # 512 KB; larger files are skipped
+
+[entry_points]
+files = ["main.py", "app.py", "index.ts", "index.js", "server.py", "__init__.py"]
+
+[ignore]
+dirs = [".git", ".canary", "node_modules", "__pycache__", "venv", ".venv", "dist", "build"]
+extensions = [".pyc", ".so", ".png", ".jpg", ".pdf", ".zip"]
+
+[sensitive]
+patterns = [
+  ".env", ".env.*",
+  "*.key", "*.pem", "*.p12", "*.pfx",
+  "id_rsa", "id_ed25519",
+  "secrets.*", "credentials.*",
+  "*password*", "*token*", "*.secret",
+]

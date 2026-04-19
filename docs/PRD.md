@@ -1,7 +1,7 @@
 # canary — Product Requirements Document
 
-**Version:** 0.2.0
-**Status:** Draft
+**Version:** 0.3.0
+**Status:** Locked for MVP build
 **Track:** Hook 'Em Hacks 2026 — Security in an AI-First World (IBM-sponsored)
 **Last updated:** 2026-04-18
 
@@ -34,7 +34,7 @@ Current tooling does not solve this:
 
 > **"You let the AI agent loose. Canary makes sure it doesn't burn the house down."**
 
-`canary` is a CLI watchdog for AI coding agent sessions. It inspects prompts before they reach the agent, monitors every file change the agent makes in real time, alerts the human when thresholds are crossed, and rolls back changes if something goes wrong.
+`canary` is a CLI watchdog for AI coding agent sessions. It inspects prompts before they reach the agent, monitors every file change the agent makes in real time using IBM Granite semantic embeddings, alerts the human when risk thresholds are crossed, and rolls back changes with one command if something goes wrong.
 
 ---
 
@@ -50,19 +50,19 @@ Current tooling does not solve this:
 ## 4. Use Cases
 
 ### UC-1: Prompt firewall
-Developer types a prompt that accidentally includes an API key. Before the prompt reaches the agent, canary intercepts it, highlights the sensitive data, and asks for confirmation.
+Developer types a prompt that accidentally includes an API key. Before the prompt reaches the agent, canary intercepts it, highlights the sensitive data (redacted), shows a risk-score bar, and asks for confirmation.
 
 ### UC-2: Agent file watch
 Developer runs `canary watch ./src` alongside Claude Code. The agent starts modifying files. Canary tracks every change semantically using IBM Granite embeddings and alerts when drift on any file exceeds the threshold.
 
 ### UC-3: Sensitive file access alert
-The agent attempts to read `.env` or `secrets.yaml`. Canary hard-stops and requires human confirmation before allowing the read.
+The agent attempts to write to `.env` or `secrets.yaml`. Canary hard-stops and requires human confirmation before continuing. Sensitive files are **never embedded** through IBM — their contents are not sent to any external service.
 
 ### UC-4: Rollback
-The agent has modified 23 files in a way that looks wrong. Developer runs `canary rollback` and all changes since the last checkpoint are reverted.
+The agent has modified 23 files in a way that looks wrong. Developer runs `canary rollback` and all changes since the last checkpoint are reverted. The current state is backed up first, so the rollback is itself reversible.
 
 ### UC-5: Session replay
-After a session, developer runs `canary log` to see a full timeline of what the agent did, what it read, what it changed, and what drift scores were recorded.
+After a session, developer runs `canary log` to see a full timeline of what the agent did, what it read, what it changed, and what drift scores were recorded. `canary log --json` produces a machine-readable audit trail suitable for compliance review.
 
 ---
 
@@ -71,76 +71,93 @@ After a session, developer runs `canary log` to see a full timeline of what the 
 ### FR-1: Prompt firewall
 - Intercept the user's prompt before it is sent to the agent
 - Scan for:
-  - API keys and tokens (regex patterns for common formats: `sk-`, `ghp_`, `xox`, `AKIA`, etc.)
-  - Passwords and secrets (entropy-based detection for high-entropy strings > 20 chars)
-  - PII: email addresses, phone numbers, SSNs, credit card numbers
-  - File paths that expose sensitive system structure (`/etc/passwd`, `~/.ssh/`, etc.)
-  - Environment variable values embedded in context
-- On detection: print a warning with the specific finding highlighted, show risk score progress bar, and prompt for confirmation before proceeding
-- `--strict` flag: block automatically without prompting
+  - **Known-format secrets** (regex): `sk-`, `ghp_`, `ghs_`, `gho_`, `xox[baprs]-`, `AKIA`, `AIza`, `glpat-`, `hf_`, `rk_live_`, `sk_live_`, `pk_live_`
+  - **High-entropy strings** (Shannon entropy > 4.5 over 20+ chars) with an allowlist for obvious non-secrets (UUIDs, git SHAs, base64 hashes following known prefixes like `sha256:`)
+  - **PII**: email addresses, phone numbers, SSNs, credit card numbers (Luhn-validated to cut false positives)
+  - **Sensitive paths**: `/etc/passwd`, `/etc/shadow`, `~/.ssh/`, `id_rsa`, `id_ed25519`, `id_dsa`, `.env` references, `/root/`
+  - **Inline env assignments**: `API_KEY=...`, `SECRET=...`, `PASSWORD=...` with a value ≥ 8 chars
+- On detection: print a redacted summary of each finding, compute a risk score, show a colored progress bar, and prompt for confirmation before proceeding
+- `--strict` flag: exit with code 1 on any finding, no prompt
+- Every scan logs a `prompt_scan` event to the session log with the finding count and score (never the raw secret)
 
-### FR-2: File system watchdog
-- Watch a target directory recursively for any file changes made during an agent session
-- On every change: compute IBM Granite embedding of the new content, compare against the sealed baseline, record the drift score
-- Alert thresholds:
-  - Files changed in 60 seconds > 10 → alert
+### FR-2: Filesystem watchdog
+- Watch a target directory recursively using OS-level events (`watchdog` → inotify/FSEvents/ReadDirectoryChangesW)
+- **Debounce**: ignore repeat `on_modified` events for the same path within 300 ms (editor save storms)
+- **Skip**: binary files, files > 512 KB, files inside ignored dirs (`.canary`, `.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `dist`, `build`)
+- On every accepted change: compute IBM Granite embedding of the new content, compare against the sealed baseline via cosine similarity, record drift
+- **Alert thresholds** (configurable in `.canary.toml`):
+  - Files changed in 60 s > 10 → alert
   - Semantic drift on any single file > 0.15 → alert
+  - Drift on entry-point file (`main.py`, `app.py`, `index.ts`, `index.js`, `server.py`, `__init__.py`) > 0.08 → alert
   - Any deletion → alert
-  - Any write to a critical file pattern (`*.env`, `*.key`, `*.pem`, `id_rsa`, `secrets.*`, `credentials.*`) → hard stop
-  - Meaning of entry point file (`main.py`, `index.ts`, `app.py`) changes > 0.08 → alert
+  - Any write to a sensitive-file pattern (`.env*`, `*.key`, `*.pem`, `id_rsa`, `secrets.*`, `credentials.*`, `*.p12`, `*.pfx`, `*.keystore`, `*.jks`) → **hard stop** requiring `y` to continue
 
-### FR-3: Sensitive file access detection
-- Maintain a list of sensitive file patterns:
-  ```
-  .env, .env.*, *.key, *.pem, *.p12, id_rsa, id_ed25519,
-  secrets.*, credentials.*, *password*, *token*, *.secret
-  ```
-- If the agent reads any matching file, canary intercepts and requires human confirmation
-- Log all sensitive file access attempts regardless of outcome
+### FR-3: Sensitive-file guard (privacy boundary)
+- Maintain a list of sensitive-file glob patterns (configurable)
+- **Files matching these patterns are NEVER embedded** — their contents never leave the developer's machine
+- On any create/modify event for a matching file: log the event and require interactive confirmation before the watcher proceeds (does not actually block the agent's write — the file is already on disk — but signals the human to intervene)
+- Log every sensitive-file event regardless of user decision
 
 ### FR-4: Checkpoints and rollback
-- On `canary watch` start, automatically create checkpoint `#0` (snapshot of all tracked files)
-- `canary checkpoint` creates a named checkpoint at any point
-- `canary rollback` reverts all files to the most recent checkpoint
-- `canary rollback <id>` reverts to a specific checkpoint
-- Rollback creates a `.canary/rollback_backup_<timestamp>/` before reverting, so the rollback itself is reversible
+- On `canary watch` start: auto-create `checkpoint_<epoch>` (full snapshot of tracked files, excluding ignore patterns)
+- `canary checkpoint [target]` creates a named checkpoint at any point
+- `canary rollback [target] [checkpoint_id]` reverts all files to the specified (default: most recent) checkpoint
+- Before rollback, the current state is snapshotted as `rollback_backup_<epoch>` — rollback is reversible
+- `canary checkpoints` lists all snapshots with timestamps
+- Checkpoints live in `<target>/.canary/checkpoints/`
 
-### FR-5: Risk score progress bar
-- Compute a risk score 0–100 for each event based on findings
-- Scoring:
-  - Hardcoded secret in prompt: +40
-  - PII in prompt: +20
-  - Sensitive file accessed: +25
-  - File drift > 0.15: +20 per file
-  - > 10 files changed in 60s: +15
-  - Critical file written: +40
-- Display as a colored terminal progress bar using `rich`:
-  - 0–30: green  `[████████░░░░░░░░░░░░] 38%`
-  - 31–60: yellow `[████████████░░░░░░░░] 55%`
-  - 61–100: red   `[████████████████████] 89%`
-- Numeric percentage shown alongside the bar
-- Bar updates in real time during `canary watch`
-- No verdict labels (CLEAN / RISKY / etc.) — the bar speaks for itself
+### FR-5: Risk score and progress bar
+- Compute a risk score 0–100 per event based on findings
+- **Scoring table**:
+
+| Finding | Points |
+|---|---|
+| Hardcoded secret in prompt (sk-, ghp_, AKIA, etc.) | +40 |
+| PII: SSN | +40 |
+| PII: credit card (Luhn-valid) | +30 |
+| PII: email / phone | +20 / +10 |
+| High-entropy string (not a known secret) | +25 |
+| Sensitive file path reference in prompt | +25 |
+| Private key file reference (`id_rsa`, etc.) | +40 |
+| Sensitive file accessed at watch time | +25 |
+| Critical file written at watch time | +40 |
+| File drift > 0.15 | +20 per file |
+| Entry-point drift > 0.08 | +25 |
+| > 10 files changed in 60 s | +15 |
+| File deletion | +30 |
+
+- Final score is `min(sum(points), 100)`
+- Display via `rich` as a 20-block progress bar:
+  - 0–30: **green** `[████████░░░░░░░░░░░░] 38%`
+  - 31–60: **yellow** `[████████████░░░░░░░░] 55%`
+  - 61–100: **red** `[████████████████████] 89%`
+- Numeric percentage shown alongside
+- No verdict labels (CLEAN / RISKY / etc.) — the bar and color speak for themselves
 
 ### FR-6: Session log
-- `canary log` prints a full chronological timeline of the session:
-  - Prompt scans (findings, risk score bar)
-  - File changes (file, drift score, timestamp)
-  - Alerts triggered
-  - Checkpoints created
-  - Rollbacks performed
-- `canary log --json` outputs machine-readable JSON
+- `canary log` prints a chronological timeline: prompt scans, file changes, alerts, checkpoints, rollbacks
+- `canary log --json` produces valid JSON suitable for piping to `jq`
+- `canary log --tail N` shows only the last N events
+- Events stored in `<target>/.canary/session.json` as an append-only JSON array
+- Maximum 10,000 events — older events rotate out to `session.YYYYMMDD.json`
 
 ### FR-7: IBM Granite semantic fingerprinting
-- On session start, embed all tracked files using IBM Granite (`ibm/granite-embedding-278m-multilingual`)
+- On session start, embed all non-sensitive, non-ignored, non-binary tracked files using IBM Granite (`ibm/granite-embedding-278m-multilingual` via watsonx.ai)
 - Cache embeddings by `sha256(content)` to avoid redundant API calls
-- On every file change, re-embed and compute cosine similarity against the baseline
-- Store all embeddings and drift scores in `.canary/session.json`
-- If `IBM_MOCK=true`, use mock embeddings without making API calls
+- On every accepted file change, re-embed and compute cosine similarity against the baseline
+- Store all embeddings in an in-memory dict (session-lifetime only — not persisted, to avoid leaking content fingerprints to disk)
+- `IBM_REGION` env var selects endpoint: `us-south` (default), `eu-de`, `jp-tok`, `eu-gb`, `au-syd`
+- If `IBM_MOCK=true`, use seeded deterministic mock embeddings (768-dim, seeded by `sha256(content)`)
 
 ### FR-8: Mock mode
-- `IBM_MOCK=true` → skip IBM API calls, return deterministic mock embeddings
-- Mock mode must produce realistic-looking output for demo purposes
+- `IBM_MOCK=true` → skip all IBM API calls, return deterministic 768-dim mock embeddings
+- Mock mode must produce realistic output for demo (drift between different content must be > 0; drift between identical content must be 0)
+- Used for development, CI, and demos without credentials
+
+### FR-9: Configuration
+- `.canary.toml` in the watched directory (or CWD) overrides defaults
+- Missing file → built-in defaults used silently
+- Supported keys: `thresholds.drift_alert`, `thresholds.drift_entry_point`, `thresholds.change_rate_window`, `thresholds.change_rate_limit`, `thresholds.max_file_size_bytes`, `entry_points.files`, `ignore.dirs`, `ignore.extensions`, `sensitive.patterns`
 
 ---
 
@@ -148,34 +165,39 @@ After a session, developer runs `canary log` to see a full timeline of what the 
 
 | Category | Requirement |
 |---|---|
-| Latency | File change detection < 500ms after write |
-| Portability | Pure Python 3.11+, no compiled dependencies |
-| Install | `pip install canary-watch` or `git clone` + `pip install -r requirements.txt` |
-| Config | `.canary.toml` in project root for thresholds and sensitive file patterns |
-| Output | Rich terminal output with live progress bar using `rich` library |
-| Storage | Session data stored in `.canary/` directory in the watched project |
+| Latency | File change detection < 500 ms after write (debounced to 300 ms per file) |
+| Throughput | Baseline embedding of 100 files < 30 s with live IBM; < 1 s in mock mode |
+| Portability | Pure Python 3.10+, no compiled dependencies |
+| Install | `pip install -e .` after `git clone` |
+| Config | `.canary.toml` in project root; falls back to built-in defaults |
+| Output | Rich terminal output with colored progress bar using `rich` |
+| Storage | Session data stored in `<target>/.canary/` with auto-generated `.gitignore` inside |
+| Privacy | Sensitive-pattern files never sent to IBM; embeddings are session-memory only |
 
 ---
 
 ## 7. Out of Scope for MVP
 
 - GUI or web dashboard
-- Network traffic inspection (agent HTTP calls)
+- Network traffic inspection of the agent's HTTP calls
 - Multi-agent session tracking
 - Cloud storage of session logs
-- Integration with specific agent APIs (works as a filesystem-level watcher, agent-agnostic)
+- Integration with specific agent APIs (canary is filesystem-level and agent-agnostic)
+- Prompt interception via stdin wrapper (documented as a future wrapper command)
+- Signed / tamper-evident session logs
 
 ---
 
-## 8. Success Metrics (Hackathon)
+## 8. Success Metrics (Hackathon Demo)
 
 | Metric | Target |
 |---|---|
-| Prompt firewall demo | Paste a fake API key into a prompt, watch canary intercept it |
-| File watchdog demo | Run an agent that touches `.env`, watch canary hard-stop it |
-| Rollback demo | Show 5 files reverted cleanly with one command |
-| Risk score bar | Colored progress bar visible and updating in real time |
-| IBM integration | Granite embedding call in the critical path (file drift detection) |
+| Prompt firewall demo | Paste a fake `sk-abc123...` into a prompt, watch canary flag it with red bar and block |
+| File watchdog demo | Run against a sample project; touch `.env`, watch canary hard-stop; modify `auth.py` with logic flip, watch drift bar update live |
+| Rollback demo | Show 3+ files reverted cleanly with one command |
+| Risk score bar | Colored progress bar visible and updating in real time during watch |
+| IBM integration | Granite embedding call on the critical path (drift detection); caching demonstrated; mock mode available |
+| Pitch length | 3-minute demo; no manual setup during presentation |
 
 ---
 
@@ -183,7 +205,11 @@ After a session, developer runs `canary log` to see a full timeline of what the 
 
 | Assumption / Risk | Mitigation |
 |---|---|
-| IBM watsonx.ai credits may run low | Cache all embeddings by sha256; use IBM_MOCK for development |
-| Filesystem watcher may miss rapid changes | Use `watchdog` library which uses OS-level inotify/FSEvents |
-| Prompt interception requires the user to route prompts through canary | Document clearly; provide a wrapper command |
-| Rollback may conflict with agent still running | Warn user to stop the agent before rolling back |
+| IBM watsonx.ai credits run low mid-demo | All embeddings cached by sha256; `IBM_MOCK=true` available as fallback |
+| Filesystem watcher misses rapid changes | `watchdog` uses OS-level inotify/FSEvents; debounce prevents over-firing |
+| Prompt interception requires user to route through canary | Documented clearly; `--strict` flag for CI integration |
+| Rollback may conflict with agent still running | Warn user to stop agent first; rollback creates backup before restoring |
+| Windows `watchdog` behavior differs from Linux/macOS | Demo performed on macOS/Linux; Windows marked as best-effort |
+| Binary files (PNG, PDF) crash embedding | Binary detection via null-byte sniff of first 1 KB; skip |
+| Huge files exceed embedding API limits | Skip files > 512 KB; embed only first 8 KB otherwise |
+| `.canary/` dir triggers self-referential watch events | Explicitly ignored in watcher recursion |

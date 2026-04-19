@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Env
+.env
+.env.local
+
+# Canary session state
+.canary/
+
+# OS
+.DS_Store
+Thumbs.db

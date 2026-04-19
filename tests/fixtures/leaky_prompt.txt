@@ -1,0 +1,2 @@
+Here is my OpenAI key sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ and my email john@example.com.
+Can you fix the auth bug?

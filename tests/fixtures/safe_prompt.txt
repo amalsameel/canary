@@ -1,0 +1,1 @@
+Fix the bug in the login function where the session token expires too early.
