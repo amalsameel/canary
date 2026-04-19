@@ -2,6 +2,8 @@
 import datetime
 import json as _json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -242,8 +244,10 @@ def _auto_setup_backend(prefer: str) -> str:
 @cli.command("prompt")
 @click.argument("text")
 @click.option("--strict", is_flag=True, help="block automatically without prompting.")
-def prompt_cmd(text, strict):
-    """scan a prompt for sensitive information before sending to an ai agent."""
+@click.option("--agent", default="claude", show_default=True, help="agent binary to forward the prompt to when clear.")
+@click.option("--check-only", is_flag=True, help="scan only; do not forward to the agent.")
+def prompt_cmd(text, strict, agent, check_only):
+    """scan a prompt for sensitive information, then forward to the agent if clear."""
     hero(subtitle="prompt firewall", path=os.getcwd())
     command_bar("prompt review")
 
@@ -277,8 +281,20 @@ def prompt_cmd(text, strict):
             console.print()
             raise SystemExit(1)
 
-        ok("forwarded")
+    if check_only:
+        ok("clear" if not findings else "forwarded (check-only)")
         console.print()
+        return
+
+    agent_path = shutil.which(agent)
+    if not agent_path:
+        fail(f"{agent} not found", "install it or add it to your PATH")
+        console.print()
+        raise SystemExit(127)
+
+    ok(f"forwarded → {agent}")
+    console.print()
+    raise SystemExit(subprocess.run([agent_path, text]).returncode)
 
 
 @cli.command("on")

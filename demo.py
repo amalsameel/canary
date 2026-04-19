@@ -1,29 +1,90 @@
 #!/usr/bin/env python3
-"""
-canary capability demo — full walkthrough of guard, audit, watch, and rollback.
+"""Live Canary demo.
 
-  python demo.py                       press Enter to advance each step
-  AUTO=1 python demo.py                auto-advance with default timing
-  AUTO=1 DELAY=1.0 python demo.py      faster auto-advance
+Default mode:
+  uses a fake `claude` binary that emits real hook payloads and file edits
+
+Real mode:
+  uses the real installed Claude CLI in non-interactive `-p` mode
+
+Examples:
+  python demo.py
+  AUTO=1 python demo.py
+  AUTO=1 DELAY=0.8 python demo.py
+  python demo.py --real-claude
+  python demo.py --real-claude --keep-demo
 """
 
+from __future__ import annotations
+
+import argparse
+import json
 import os
+from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
+import textwrap
 import time
 
+ROOT = Path(__file__).resolve().parent
+VENV_BIN = ROOT / ".venv" / "bin"
+CANARY_BIN = VENV_BIN / "canary"
+PYTHON_BIN = VENV_BIN / "python"
+
+
+def _bootstrap_python() -> None:
+    """Re-exec through the repo-local virtualenv when available."""
+    if not PYTHON_BIN.exists():
+        return
+    if Path(sys.executable).resolve() == PYTHON_BIN.resolve():
+        return
+    os.execv(str(PYTHON_BIN), [str(PYTHON_BIN), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+_bootstrap_python()
+
+from dotenv import dotenv_values
 from rich.console import Console
 from rich.panel import Panel
-from rich.rule import Rule
-from rich.table import Table
+
+from canary.guard import resolve_real_binary
+
+
+AUTO = os.environ.get("AUTO", "0") == "1"
+DELAY = float(os.environ.get("DELAY", "1.8"))
+KEEP_DEMO = os.environ.get("KEEP_DEMO", "0") == "1"
+BRAND = "#ccff04"
+DEFAULT_REAL_PROMPT = (
+    "Read the existing Express demo project, then add JWT authentication middleware. "
+    "Create src/auth/middleware.js, update routes/orders.js and routes/payments.js to require auth, "
+    "update package.json if needed, run one lightweight verification command if helpful, "
+    "and print a concise summary of what changed."
+)
 
 console = Console()
 
-AUTO   = os.environ.get("AUTO", "0") == "1"
-DELAY  = float(os.environ.get("DELAY", "2.2"))
-BRAND  = "#ccff04"
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="run the Canary demo")
+    parser.add_argument(
+        "--real-claude",
+        action="store_true",
+        help="use the real installed claude cli instead of the fake demo agent",
+    )
+    parser.add_argument(
+        "--prompt",
+        default=DEFAULT_REAL_PROMPT,
+        help="prompt to send to claude in --real-claude mode",
+    )
+    parser.add_argument(
+        "--keep-demo",
+        action="store_true",
+        help="keep the temp demo workspace after the run",
+    )
+    return parser.parse_args(argv)
 
-# ── helpers ──────────────────────────────────────────────────────────────────
 
 def pause(secs: float | None = None) -> None:
     if AUTO:
@@ -32,23 +93,11 @@ def pause(secs: float | None = None) -> None:
         try:
             input()
         except (EOFError, KeyboardInterrupt):
-            sys.exit(0)
+            raise SystemExit(0)
 
 
 def wait(secs: float) -> None:
-    """Always sleep regardless of AUTO mode (simulates processing time)."""
     time.sleep(secs)
-
-
-def cmd(text: str, char_delay: float = 0.045) -> None:
-    """Simulate typing a shell command."""
-    console.print(f"\n[bold {BRAND}]❯[/bold {BRAND}] ", end="")
-    for ch in text:
-        sys.stdout.write(ch)
-        sys.stdout.flush()
-        time.sleep(char_delay)
-    console.print()
-    wait(0.4)
 
 
 def section(title: str, hint: str = "") -> None:
@@ -57,478 +106,505 @@ def section(title: str, hint: str = "") -> None:
     if hint:
         console.print(f"  [dim]{hint}[/dim]")
     console.print()
-    pause(0.6 if AUTO else None)
-
-
-def step(label: str) -> None:
-    console.print(f"\n  [dim]·  {label}[/dim]")
-    wait(0.3)
-
-
-def advance_prompt() -> None:
-    if not AUTO:
-        console.print(f"\n  [dim]─── press Enter to continue ───[/dim]")
-        pause()
-    else:
-        pause()
-
-
-# ── canary UI primitives (matching real output) ───────────────────────────────
-
-def hero(subtitle: str, path: str = "/home/dev/api-project") -> None:
-    meta = f"[bold white]canary[/bold white] [dim]v0.1.0[/dim]\n[dim]{subtitle}[/dim]\n[dim]{path}[/dim]"
-    t = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False, expand=False)
-    t.add_column(width=4, no_wrap=True)
-    t.add_column()
-    t.add_row(f"  [bold {BRAND}]◉[/bold {BRAND}]", meta)
-    console.print()
-    console.print(Panel(t, border_style=BRAND, padding=(1, 3), expand=False))
-    console.print()
-
-
-def bar_cmd(text: str) -> None:
-    console.print(f"  [dim]›[/dim] [bold white]{text}[/bold white]", style="on #2f3136")
-    console.print()
-
-
-def ok(text: str, detail: str | None = None) -> None:
-    console.print(f"  [bold {BRAND}]✓[/bold {BRAND}]  {text}")
-    if detail:
-        console.print(f"    [dim]╰─  {detail}[/dim]")
+    pause(0.4 if AUTO else None)
 
 
 def note(text: str) -> None:
     console.print(f"  [dim]·  {text}[/dim]")
 
 
-def warn(text: str, detail: str | None = None) -> None:
-    console.print(f"  [bold yellow]⚠[/bold yellow]  {text}")
-    if detail:
-        console.print(f"    [dim]╰─  {detail}[/dim]")
-
-
-def result(content: str) -> None:
-    console.print(Panel(content, border_style=BRAND, padding=(1, 3), expand=False))
+def hero(title: str, body: str) -> None:
     console.print()
-
-
-def audit_hook_line(
-    risk: str, category: str, via: str, fields: list[tuple[str, str]]
-) -> None:
-    RISK_COLOR = {"SAFE": BRAND, "LOW": BRAND, "MEDIUM": "yellow", "HIGH": "red", "CRITICAL": "bold red"}
-    RISK_ICON  = {"SAFE": "●", "LOW": "◆", "MEDIUM": "▲", "HIGH": "■", "CRITICAL": "✕"}
-    color = RISK_COLOR.get(risk, "white")
-    icon  = RISK_ICON.get(risk, "◆")
     console.print(
-        f"\n  [bold {color}]{icon}[/bold {color}]  "
-        f"[bold]canary audit[/bold]  [{color}]{risk}[/{color}]  "
-        f"[dim]{category}  ·  Bash tool  ·  {via}[/dim]"
-    )
-    for label, value in fields:
-        console.print(f"  [dim]   ╰─ {label:<11}[/dim]  {value}")
-    console.print()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DEMO SEQUENCE
-# ─────────────────────────────────────────────────────────────────────────────
-
-def phase_install() -> None:
-    section("phase 1 · installation", "install canary")
-
-    cmd("pip install canary-watch")
-    wait(0.8)
-    console.print("  [dim]Collecting canary-watch[/dim]")
-    console.print("  [dim]  Downloading canary_watch-0.1.0-py3-none-any.whl[/dim]")
-    console.print("  [dim]Successfully installed canary-watch-0.1.0[/dim]")
-    console.print(f"  [bold {BRAND}]✓[/bold {BRAND}]  installed canary-watch")
-    wait(0.5)
-
-    advance_prompt()
-
-    cmd("canary setup")
-    wait(0.5)
-    hero("guided setup", "/home/dev/api-project")
-    bar_cmd("setup")
-    wait(0.8)
-    console.print(f"  [dim]│  device    [/dim]  Apple M2 Pro — 16 GB")
-    console.print(f"  [dim]│  recommend [/dim]  online")
-    console.print(f"  [dim]│  selected  [/dim]  online")
-    console.print()
-    ok("online mode", "managed cloud inference ready")
-    console.print()
-    ok("guard installed for claude", "~/.canary/bin/claude")
-    note("real binary  /usr/local/bin/claude")
-    console.print()
-    ok("bash audit hook installed", "~/.claude/settings.json")
-    note('export PATH="$HOME/.canary/bin:$PATH"')
-    console.print()
-
-    advance_prompt()
-
-
-def phase_guard() -> None:
-    section("phase 2 · prompt guard", "canary screens every prompt before it reaches Claude")
-
-    cmd("canary on")
-    wait(0.4)
-    hero("prompt screening", "/home/dev/api-project")
-    bar_cmd("on")
-    result(
-        f"[bold {BRAND}]◉[/bold {BRAND}]  screening [bold white]enabled[/bold white]\n"
-        f"[dim]{'─' * 34}[/dim]\n"
-        f"  [dim]╰─  all prompts checked before reaching the agent[/dim]\n"
-        f"  [dim]╰─  pass [white]-ignore[/white] to bypass for a single call[/dim]"
-    )
-
-    advance_prompt()
-
-    cmd('claude "explain the current structure of the API"')
-    wait(0.6)
-    console.print()
-    console.print(f"  [bold {BRAND}]◉[/bold {BRAND}]  canary  [dim]·  reviewing prompt[/dim]")
-    wait(1.0)
-
-    t = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
-    t.add_column(width=12, no_wrap=True)
-    t.add_column()
-    t.add_row(f"[{BRAND}]●  safe[/{BRAND}]", "[dim]explanation — no sensitive operations detected[/dim]")
-    console.print(Panel(t, border_style=BRAND, padding=(1, 2), expand=False))
-    console.print()
-
-    console.print("  [dim]╰─  forwarding to claude[/dim]")
-    wait(0.8)
-    console.print()
-    console.rule("[dim]claude[/dim]", style="dim")
-    console.print()
-    wait(0.6)
-    console.print("  The API is an [bold white]Express.js[/bold white] application with four route modules:")
-    wait(0.2)
-    console.print("  [dim]·[/dim]  [white]routes/users.js[/white]    — user CRUD, no auth middleware yet")
-    wait(0.1)
-    console.print("  [dim]·[/dim]  [white]routes/products.js[/white] — product catalogue, public endpoints")
-    wait(0.1)
-    console.print("  [dim]·[/dim]  [white]routes/orders.js[/white]   — order management, needs protection")
-    wait(0.1)
-    console.print("  [dim]·[/dim]  [white]routes/payments.js[/white] — Stripe integration, unauthenticated")
-    wait(0.3)
-    console.print()
-    console.print("  Recommend adding [bold white]JWT middleware[/bold white] to orders and payments before the next release.")
-    console.print()
-
-    advance_prompt()
-
-
-def phase_checkpoint() -> None:
-    section("phase 3 · checkpoint A", "snapshot the workspace before making changes")
-
-    cmd('canary checkpoint --name "checkpoint-a"')
-    wait(0.4)
-    hero("workspace snapshot", "/home/dev/api-project")
-    bar_cmd("checkpoint")
-    wait(0.9)
-    ok("checkpoint saved", "checkpoint-a")
-    console.print()
-
-    advance_prompt()
-
-
-def phase_activate_monitoring() -> None:
-    section("phase 4 · activate monitoring", "start the background auditor and watcher")
-
-    cmd("canary audit")
-    wait(0.4)
-    hero("background auditor", "/home/dev/api-project")
-    bar_cmd("audit")
-    result(
-        f"[bold {BRAND}]◉[/bold {BRAND}]  auditor running in background\n"
-        f"[dim]{'─' * 36}[/dim]\n"
-        f"  [dim]│  pid    38471[/dim]\n"
-        f"  [dim]│  log    ~/.canary/audit.log[/dim]\n"
-        f"  [dim]│  mode   exits after 60s idle[/dim]\n"
-        f"[dim]{'─' * 36}[/dim]\n"
-        f"  [dim]╰─  canary audit --log   ·  follow output[/dim]\n"
-        f"  [dim]╰─  canary audit --stop  ·  stop the auditor[/dim]"
-    )
-
-    advance_prompt()
-
-    cmd("canary watch")
-    wait(0.4)
-    hero("background watcher", "/home/dev/api-project")
-    bar_cmd("watch")
-    result(
-        f"[bold {BRAND}]◉[/bold {BRAND}]  watcher running in background\n"
-        f"[dim]{'─' * 36}[/dim]\n"
-        f"  [dim]│  pid    38489[/dim]\n"
-        f"  [dim]│  log    ~/.canary/watch.log[/dim]\n"
-        f"  [dim]│  mode   exits after 30s idle[/dim]\n"
-        f"[dim]{'─' * 36}[/dim]\n"
-        f"  [dim]╰─  canary watch --log   ·  follow output[/dim]\n"
-        f"  [dim]╰─  canary watch --stop  ·  stop the watcher[/dim]"
-    )
-
-    advance_prompt()
-
-
-def phase_risky_session() -> None:
-    section("phase 5 · agent session with bash permissions",
-            "Claude adds JWT auth — canary intercepts each tool call")
-
-    cmd('claude "add JWT authentication middleware to the orders and payments routes"')
-    wait(0.8)
-    console.print()
-    console.print(f"  [bold {BRAND}]◉[/bold {BRAND}]  canary  [dim]·  reviewing prompt[/dim]")
-    wait(1.0)
-
-    t = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
-    t.add_column(width=16, no_wrap=True)
-    t.add_column()
-    t.add_row("[yellow]▲  medium[/yellow]", "[dim]auth / security change — agent will modify authentication logic[/dim]")
-    console.print(Panel(t, border_style=BRAND, padding=(1, 2), expand=False))
-    console.print()
-
-    console.print("  continue? [y/n]  ", end="")
-    wait(1.2)
-    console.print("[bold white]y[/bold white]")
-    wait(0.4)
-    console.print(f"  [bold {BRAND}]✓[/bold {BRAND}]  forwarding to claude")
-    console.print()
-    console.rule("[dim]claude[/dim]", style="dim")
-    console.print()
-    wait(0.8)
-
-    # Tool call 1 — read existing files (safe)
-    console.print("  [dim]Claude is reading the project structure...[/dim]")
-    wait(0.6)
-    audit_hook_line("LOW", "code restructure", "pattern", [
-        ("what",         "reading existing route files for context"),
-        ("repercussions","read-only — no side effects"),
-    ])
-    wait(0.5)
-
-    # Tool call 2 — npm install
-    console.print("  Claude wants to run a bash command:")
-    console.print("  [dim]  npm install jsonwebtoken bcrypt[/dim]")
-    console.print()
-    audit_hook_line("MEDIUM", "package install", "granite", [
-        ("what",         "installing jsonwebtoken and bcrypt"),
-        ("repercussions","adds external dependencies with supply-chain exposure"),
-    ])
-    console.print("  Allow? [y/n]  ", end="")
-    wait(1.4)
-    console.print("[bold white]y[/bold white]")
-    wait(0.6)
-    console.print("  [dim]added 2 packages (jsonwebtoken, bcrypt)[/dim]")
-    console.print()
-
-    advance_prompt()
-
-    # Tool call 3 — mkdir
-    console.print("  Claude wants to run a bash command:")
-    console.print("  [dim]  mkdir -p src/auth[/dim]")
-    console.print()
-    audit_hook_line("LOW", "code restructure", "pattern", [
-        ("what",         "creating auth directory"),
-        ("repercussions","local directory creation — reversible"),
-    ])
-    console.print("  Allow? [y/n]  ", end="")
-    wait(1.0)
-    console.print("[bold white]y[/bold white]")
-    wait(0.4)
-    console.print()
-
-    # Tool call 4 — write auth middleware (HIGH — auth content)
-    console.print("  Claude wants to write a file:")
-    console.print("  [dim]  src/auth/middleware.js[/dim]")
-    console.print()
-    audit_hook_line("HIGH", "auth / security change", "granite", [
-        ("what",         "writing JWT verification middleware"),
-        ("repercussions","modifies authentication logic — review carefully"),
-    ])
-    console.print("  Allow? [y/n]  ", end="")
-    wait(1.6)
-    console.print("[bold white]y[/bold white]")
-    wait(0.5)
-    console.print()
-
-    advance_prompt()
-
-    # Tool call 5 — write updated routes (HIGH — auth references)
-    console.print("  Claude wants to write a file:")
-    console.print("  [dim]  routes/orders.js[/dim]")
-    console.print()
-    audit_hook_line("HIGH", "auth / security change", "pattern", [
-        ("what",         "patching orders route to require authentication"),
-        ("repercussions","changes who can access order data"),
-    ])
-    console.print("  Allow? [y/n]  ", end="")
-    wait(1.3)
-    console.print("[bold white]y[/bold white]")
-    wait(0.4)
-    console.print()
-
-    # Tool call 6 — npm test
-    console.print("  Claude wants to run a bash command:")
-    console.print("  [dim]  npm test[/dim]")
-    console.print()
-    audit_hook_line("LOW", "testing", "pattern", [
-        ("what",         "running the test suite"),
-        ("repercussions","read-only — no filesystem changes"),
-    ])
-    console.print("  Allow? [y/n]  ", end="")
-    wait(0.9)
-    console.print("[bold white]y[/bold white]")
-    wait(0.7)
-    console.print("  [dim]PASS  tests/auth.test.js (3 tests)[/dim]")
-    console.print("  [dim]PASS  tests/orders.test.js (7 tests)[/dim]")
-    console.print(f"  [bold {BRAND}]✓[/bold {BRAND}]  all tests passed")
-    console.print()
-
-    console.rule("[dim]session complete[/dim]", style="dim")
-    console.print()
-
-    advance_prompt()
-
-
-def phase_review_logs() -> None:
-    section("phase 6 · review what canary caught", "audit log and watch drift report")
-
-    cmd("canary audit --log")
-    wait(0.5)
-    console.print()
-    console.rule("[dim]audit log[/dim]", style="dim")
-    console.print()
-
-    events = [
-        ("14:02:11", "●", BRAND,    "LOW",    "code restructure",       "read existing routes"),
-        ("14:02:19", "▲", "yellow", "MEDIUM", "package install",        "npm install jsonwebtoken bcrypt"),
-        ("14:02:31", "◆", BRAND,    "LOW",    "code restructure",       "mkdir -p src/auth"),
-        ("14:02:38", "■", "red",    "HIGH",   "auth / security change", "write src/auth/middleware.js"),
-        ("14:02:44", "■", "red",    "HIGH",   "auth / security change", "write routes/orders.js"),
-        ("14:02:51", "◆", BRAND,    "LOW",    "testing",                "npm test"),
-    ]
-
-    for ts, icon, color, risk, category, detail in events:
-        console.print(
-            f"  [dim]{ts}  │[/dim]  [{color}]{icon}  {risk}[/{color}]"
-            f"  [dim]{category}[/dim]"
+        Panel(
+            f"[bold {BRAND}]{title}[/bold {BRAND}]\n\n{body}",
+            border_style=BRAND,
+            padding=(1, 3),
+            expand=False,
         )
-        console.print(f"  [dim]   ╰─ command      [/dim]  {detail}")
-        console.print()
-        wait(0.25)
-
-    note("6 audit event(s)  ·  2 HIGH  ·  1 MEDIUM  ·  3 LOW")
+    )
     console.print()
 
-    advance_prompt()
 
-    cmd("canary watch --log")
-    wait(0.5)
-    console.print()
-    console.rule("[dim]watch log[/dim]", style="dim")
-    console.print()
-
-    watch_events = [
-        ("14:02:33", "✦", BRAND,    "created",  "src/auth/"),
-        ("14:02:39", "✦", BRAND,    "created",  "src/auth/middleware.js"),
-        ("14:02:45", "◆", "white",  "modified", "routes/orders.js"),
-        ("14:02:45", "◆", "white",  "modified", "routes/payments.js"),
-        ("14:02:47", "◆", "white",  "modified", "package.json"),
-        ("14:02:47", "◆", "white",  "modified", "package-lock.json"),
-    ]
-
-    for ts, icon, color, etype, rel in watch_events:
-        console.print(f"  [dim]{ts}  │[/dim]  [{color}]{icon}[/{color}]  [white]{rel}[/white]")
-        if etype == "modified":
-            drift = "0.3812" if "orders" in rel else ("0.2941" if "payments" in rel else "0.0211")
-            d_color = "red" if float(drift) > 0.3 else ("yellow" if float(drift) > 0.2 else BRAND)
-            d_icon  = "■" if float(drift) > 0.3 else ("▲" if float(drift) > 0.2 else "●")
-            console.print(f"            [dim]╰─  drift[/dim]  [{d_color}]{'█' * int(float(drift)*20):░<20}[/{d_color}]  [{d_color}]{drift}[/{d_color}]  [{d_color}]{d_icon}[/{d_color}]")
-        console.print()
-        wait(0.2)
-
-    note("6 file event(s)  ·  2 drift alert(s)")
+def cmd(text: str, char_delay: float = 0.02) -> None:
+    console.print(f"\n[bold {BRAND}]❯[/bold {BRAND}] ", end="")
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(char_delay)
     console.print()
 
-    advance_prompt()
+
+def _require_demo_runtime() -> None:
+    missing = [str(path) for path in (CANARY_BIN, PYTHON_BIN) if not path.exists()]
+    if missing:
+        raise SystemExit(
+            "demo requires the repo-local virtualenv with `canary` installed.\n"
+            f"missing: {', '.join(missing)}"
+        )
 
 
-def phase_rollback() -> None:
-    section("phase 7 · rollback to checkpoint A", "restore the workspace to its pre-session state")
+def _load_backend_env() -> dict[str, str]:
+    keys = (
+        "IBM_API_KEY",
+        "IBM_PROJECT_ID",
+        "IBM_REGION",
+        "IBM_LOCAL",
+        "IBM_MOCK",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+    )
+    values: dict[str, str] = {}
+    env_path = ROOT / ".env"
+    file_values = dotenv_values(env_path) if env_path.exists() else {}
+    for key in keys:
+        value = os.environ.get(key)
+        if not value:
+            raw = file_values.get(key)
+            value = str(raw) if raw not in (None, "") else ""
+        if value:
+            values[key] = value
+    return values
 
-    cmd('canary rollback . "checkpoint-a"')
-    wait(0.4)
-    hero("restore workspace state", "/home/dev/api-project")
-    bar_cmd("rollback")
 
-    console.print(f"  [dim]│  snapshot  [/dim]  checkpoint-a")
-    console.print(f"  [dim]│  saved     [/dim]  2026-04-19 14:01:44")
+def _backend_label(values: dict[str, str]) -> str:
+    if values.get("IBM_LOCAL", "").lower() == "true":
+        return "local Granite"
+    if values.get("IBM_MOCK", "").lower() == "true":
+        return "mock Granite"
+    if values.get("IBM_API_KEY") and values.get("IBM_PROJECT_ID"):
+        return f"online IBM ({values.get('IBM_REGION', 'us-south')})"
+    return "unconfigured"
+
+
+def _base_env(
+    home_dir: Path,
+    real_bin_dir: Path | None,
+    backend_env: dict[str, str],
+    *,
+    mock_default: bool,
+) -> dict[str, str]:
+    env = os.environ.copy()
+    merged_backend = dict(backend_env)
+    if mock_default:
+        merged_backend.setdefault("IBM_MOCK", "true")
+        merged_backend.setdefault("IBM_LOCAL", "false")
+
+    env.update(
+        {
+            "HOME": str(home_dir),
+            "PYTHONPYCACHEPREFIX": str(home_dir / ".pycache"),
+        }
+    )
+
+    path_parts = [str(home_dir / ".canary" / "bin")]
+    if real_bin_dir is not None:
+        path_parts.append(str(real_bin_dir))
+    path_parts.extend([str(VENV_BIN), env.get("PATH", "")])
+    env["PATH"] = os.pathsep.join(path_parts)
+    env.update(merged_backend)
+    return env
+
+
+def _write_demo_env(project_dir: Path, values: dict[str, str]) -> None:
+    lines: list[str] = []
+    for key in ("IBM_API_KEY", "IBM_PROJECT_ID", "IBM_REGION", "IBM_LOCAL", "IBM_MOCK"):
+        if key in values:
+            lines.append(f"{key}={values[key]}")
+    if lines:
+        (project_dir / ".env").write_text("\n".join(lines) + "\n")
+
+
+def _write_demo_project(project_dir: Path, backend_env: dict[str, str]) -> None:
+    (project_dir / "routes").mkdir(parents=True, exist_ok=True)
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    _write_demo_env(project_dir, backend_env)
+
+    (project_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "demo-api-project",
+                "private": True,
+                "dependencies": {"express": "^4.21.0"},
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    (project_dir / "routes" / "orders.js").write_text(
+        textwrap.dedent(
+            """\
+            const express = require("express");
+            const router = express.Router();
+
+            router.get("/orders", (req, res) => {
+              res.json({ ok: true, orders: [] });
+            });
+
+            module.exports = router;
+            """
+        )
+    )
+
+    (project_dir / "routes" / "payments.js").write_text(
+        textwrap.dedent(
+            """\
+            const express = require("express");
+            const router = express.Router();
+
+            router.post("/payments", (req, res) => {
+              res.json({ ok: true, accepted: false });
+            });
+
+            module.exports = router;
+            """
+        )
+    )
+
+
+def _write_demo_agent(real_bin_dir: Path) -> Path:
+    script = real_bin_dir / "claude"
+    script.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            exec {PYTHON_BIN} -m canary.demo_fake_claude "$@"
+            """
+        )
+    )
+    script.chmod(0o755)
+    return script
+
+
+def _run(
+    args: list[str],
+    *,
+    env: dict[str, str],
+    cwd: Path,
+    input_text: str | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        cwd=str(cwd),
+        env=env,
+        input=input_text,
+        text=True,
+        capture_output=True,
+        check=check,
+    )
+
+
+def _stream_command(
+    argv: list[str],
+    *,
+    display: str,
+    env: dict[str, str],
+    cwd: Path,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    cmd(display)
+    result = _run(argv, env=env, cwd=cwd, input_text=input_text)
+    if result.stdout:
+        console.print(result.stdout.rstrip())
+    if result.stderr:
+        console.print(result.stderr.rstrip())
     console.print()
+    return result
 
-    with console.status("[dim]restoring files...[/dim]", spinner="dots"):
-        wait(2.0)
 
-    ok("restore complete", "checkpoint-a")
-    note("backup saved as rollback_backup_1776596504")
+def _tail_text(path: Path, lines: int = 120) -> str:
+    if not path.exists():
+        return f"(missing) {path}"
+    content = path.read_text(errors="ignore").splitlines()
+    return "\n".join(content[-lines:])
+
+
+def _assert_success(result: subprocess.CompletedProcess[str], label: str) -> None:
+    if result.returncode == 0:
+        return
+    raise RuntimeError(f"{label} failed with exit code {result.returncode}")
+
+
+def _prepare_fake_environment() -> tuple[Path, Path, Path, Path, dict[str, str], str]:
+    temp_root = Path(tempfile.mkdtemp(prefix="canary-live-demo-"))
+    home_dir = temp_root / "home"
+    project_dir = temp_root / "demo-project"
+    real_bin_dir = temp_root / "real-bin"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    real_bin_dir.mkdir(parents=True, exist_ok=True)
+
+    backend_env = {"IBM_MOCK": "true", "IBM_LOCAL": "false"}
+    _write_demo_project(project_dir, backend_env)
+    demo_agent = _write_demo_agent(real_bin_dir)
+    env = _base_env(home_dir, real_bin_dir, backend_env, mock_default=True)
+    return temp_root, home_dir, project_dir, demo_agent, env, "mock Granite"
+
+
+def _prepare_real_environment() -> tuple[Path, Path, Path, Path, dict[str, str], str]:
+    real_claude = resolve_real_binary("claude")
+    if not real_claude:
+        raise SystemExit("real demo requires `claude` on PATH")
+
+    temp_root = Path(tempfile.mkdtemp(prefix="canary-real-demo-"))
+    home_dir = temp_root / "home"
+    project_dir = temp_root / "demo-project"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    user_claude_dir = Path.home() / ".claude"
+    if user_claude_dir.exists():
+        shutil.copytree(user_claude_dir, home_dir / ".claude", dirs_exist_ok=True)
+    else:
+        (home_dir / ".claude").mkdir(parents=True, exist_ok=True)
+
+    backend_env = _load_backend_env()
+    _write_demo_project(project_dir, backend_env)
+    env = _base_env(home_dir, None, backend_env, mock_default=False)
+    return temp_root, home_dir, project_dir, Path(real_claude), env, _backend_label(backend_env)
+
+
+def _best_effort_stop(env: dict[str, str], cwd: Path) -> None:
+    for args in ([str(CANARY_BIN), "audit", "--stop"], [str(CANARY_BIN), "watch", "--stop"]):
+        try:
+            _run(args, env=env, cwd=cwd)
+        except Exception:
+            pass
+
+
+def _show_logs_and_restore(*, home_dir: Path, project_dir: Path, env: dict[str, str]) -> None:
+    section("phase 6 · inspect the resulting logs", "these are the real background log files produced by canary audit/watch")
+    audit_log = home_dir / ".canary" / "audit.log"
+    watch_log = home_dir / ".canary" / "watch.log"
+    hero("Audit Log", f"[dim]{audit_log}[/dim]\n\n{_tail_text(audit_log)}")
+    pause()
+    hero("Watch Log", f"[dim]{watch_log}[/dim]\n\n{_tail_text(watch_log)}")
+    pause()
+
+    section("phase 7 · inspect project state and checkpoints", "show the actual tracked session log and saved snapshots")
+    result = _stream_command([str(CANARY_BIN), "log", "."], display="canary log .", env=env, cwd=project_dir)
+    _assert_success(result, "canary log")
+    result = _stream_command([str(CANARY_BIN), "checkpoints", "."], display="canary checkpoints .", env=env, cwd=project_dir)
+    _assert_success(result, "canary checkpoints")
+    pause()
+
+    section("phase 8 · roll back", "restore the workspace from the automatic checkpoint created by canary watch")
+    result = _stream_command([str(CANARY_BIN), "rollback", "."], display="canary rollback .", env=env, cwd=project_dir)
+    _assert_success(result, "canary rollback")
+    console.print("  [dim]current files after rollback:[/dim]")
+    for rel in sorted(str(path.relative_to(project_dir)) for path in project_dir.rglob("*") if path.is_file() and ".canary/checkpoints" not in str(path)):
+        console.print(f"  [dim]·[/dim]  {rel}")
     console.print()
+    pause()
 
-    step("src/auth/middleware.js  removed")
-    wait(0.15)
-    step("routes/orders.js       restored")
-    wait(0.15)
-    step("routes/payments.js     restored")
-    wait(0.15)
-    step("package.json           restored")
-    wait(0.15)
-    step("package-lock.json      restored")
+
+def _run_fake_demo(*, temp_root: Path, home_dir: Path, project_dir: Path, fake_claude: Path, env: dict[str, str], backend_label: str) -> None:
+    hero(
+        "Demo Workspace",
+        "\n".join(
+            [
+                f"[dim]mode[/dim]     demo agent",
+                f"[dim]backend[/dim]  {backend_label}",
+                f"[dim]root[/dim]     {temp_root}",
+                f"[dim]home[/dim]     {home_dir}",
+                f"[dim]project[/dim]  {project_dir}",
+                f"[dim]claude[/dim]   {fake_claude}",
+            ]
+        ),
+    )
+
+    section("phase 1 · install the guard", "use the real canary cli against an isolated demo agent binary")
+    result = _stream_command([str(CANARY_BIN), "guard", "install"], display="canary guard install", env=env, cwd=project_dir)
+    _assert_success(result, "guard install")
+    pause()
+
+    section("phase 2 · enable screening", "prompt screening toggles the installed claude shim")
+    result = _stream_command([str(CANARY_BIN), "on"], display="canary on", env=env, cwd=project_dir)
+    _assert_success(result, "canary on")
+    pause()
+
+    section("phase 3 · prompt firewall", "show a real blocked prompt before we start the agent session")
+    result = _stream_command(
+        [str(CANARY_BIN), "prompt", "my key is sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ fix things", "--strict"],
+        display='canary prompt "my key is sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ fix things" --strict',
+        env=env,
+        cwd=project_dir,
+    )
+    note(f"expected non-zero exit for strict blocking  ·  exit {result.returncode}")
     console.print()
+    pause()
 
-    advance_prompt()
+    section("phase 4 · arm the background listeners", "audit captures hook activity and watch tracks the repo")
+    result = _stream_command([str(CANARY_BIN), "audit"], display="canary audit", env=env, cwd=project_dir)
+    _assert_success(result, "canary audit")
+    result = _stream_command([str(CANARY_BIN), "watch", "."], display="canary watch .", env=env, cwd=project_dir)
+    _assert_success(result, "canary watch")
+    pause()
+
+    section("phase 5 · run claude through the shim", "the demo agent binary emits real hook payloads and edits files")
+    result = _stream_command(
+        ["claude", "add JWT authentication middleware to the orders and payments routes"],
+        display='claude "add JWT authentication middleware to the orders and payments routes"',
+        env=env,
+        cwd=project_dir,
+        input_text="y\n",
+    )
+    _assert_success(result, "guarded claude session")
+    wait(3.0)
+    console.print()
+    pause()
+
+    _show_logs_and_restore(home_dir=home_dir, project_dir=project_dir, env=env)
 
 
-def phase_summary() -> None:
-    section("demo complete")
+def _run_real_demo(
+    *,
+    temp_root: Path,
+    home_dir: Path,
+    project_dir: Path,
+    real_claude: Path,
+    env: dict[str, str],
+    backend_label: str,
+    prompt: str,
+) -> None:
+    hero(
+        "Demo Workspace",
+        "\n".join(
+            [
+                f"[dim]mode[/dim]     real claude agent",
+                f"[dim]backend[/dim]  {backend_label}",
+                f"[dim]root[/dim]     {temp_root}",
+                f"[dim]home[/dim]     {home_dir}",
+                f"[dim]project[/dim]  {project_dir}",
+                f"[dim]claude[/dim]   {real_claude}",
+            ]
+        ),
+    )
 
-    lines = [
-        f"[bold {BRAND}]◉[/bold {BRAND}]  canary protected the session end-to-end\n"
-        f"[dim]{'─' * 40}[/dim]\n"
-        f"  [dim]│  prompt guard    [/dim]  screened before claude received the task\n"
-        f"  [dim]│  6 tool calls    [/dim]  audited live as claude worked\n"
-        f"  [dim]│  2 HIGH alerts   [/dim]  auth middleware writes flagged in real time\n"
-        f"  [dim]│  6 file changes  [/dim]  tracked with embedding drift detection\n"
-        f"  [dim]│  rollback        [/dim]  workspace restored to checkpoint-a in 2s\n"
-        f"[dim]{'─' * 40}[/dim]\n"
-        f"  [dim]╰─  canary docs  ·  built-in help topics[/dim]\n"
-        f"  [dim]╰─  canary usage ·  daily api quota[/dim]"
-    ]
-    result("\n".join(lines))
+    if backend_label == "unconfigured":
+        hero(
+            "Backend Warning",
+            "[yellow]No Canary backend was found in env or repo `.env`.[/yellow]\n\n"
+            "Prompt regex checks will still work, but semantic prompt scanning and drift detection may be incomplete.\n"
+            "For a fuller demo, set `IBM_LOCAL=true` or export `IBM_API_KEY` and `IBM_PROJECT_ID` first.",
+        )
+        pause()
 
+    section("phase 1 · install the guard", "install canary against the real claude binary inside an isolated temp home")
+    result = _stream_command([str(CANARY_BIN), "guard", "install"], display="canary guard install", env=env, cwd=project_dir)
+    _assert_success(result, "guard install")
+    pause()
 
-# ─────────────────────────────────────────────────────────────────────────────
+    section("phase 2 · enable screening", "prompt screening toggles the real claude shim")
+    result = _stream_command([str(CANARY_BIN), "on"], display="canary on", env=env, cwd=project_dir)
+    _assert_success(result, "canary on")
+    pause()
+
+    section("phase 3 · prompt firewall", "show a real blocked prompt before launching claude")
+    result = _stream_command(
+        [str(CANARY_BIN), "prompt", "my key is sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ fix things", "--strict"],
+        display='canary prompt "my key is sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ fix things" --strict',
+        env=env,
+        cwd=project_dir,
+    )
+    note(f"expected non-zero exit for strict blocking  ·  exit {result.returncode}")
+    console.print()
+    pause()
+
+    section("phase 4 · arm the background listeners", "audit listens for claude hook events and watch monitors the repo continuously")
+    result = _stream_command([str(CANARY_BIN), "audit"], display="canary audit", env=env, cwd=project_dir)
+    _assert_success(result, "canary audit")
+    result = _stream_command([str(CANARY_BIN), "watch", ".", "--continuous"], display="canary watch . --continuous", env=env, cwd=project_dir)
+    _assert_success(result, "canary watch")
+    pause()
+
+    section("phase 5 · run the real claude agent", "use claude print mode so the whole session can run end-to-end from one command")
+    result = _stream_command(
+        ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
+        display='claude -p "<demo prompt>" --permission-mode bypassPermissions',
+        env=env,
+        cwd=project_dir,
+    )
+    _assert_success(result, "real claude session")
+    wait(3.0)
+    console.print()
+    pause()
+
+    _show_logs_and_restore(home_dir=home_dir, project_dir=project_dir, env=env)
+
 
 def main() -> None:
+    _require_demo_runtime()
+    args = _parse_args()
+    keep_demo = KEEP_DEMO or args.keep_demo
+
     console.print()
-    console.print(Panel(
-        f"[bold {BRAND}]canary[/bold {BRAND}]  [dim]capability demo[/dim]\n\n"
-        f"  [dim]{'auto-advance  (AUTO=1)' if AUTO else 'press Enter to advance each step'}[/dim]\n"
-        f"  [dim]Ctrl-C to exit at any time[/dim]",
-        border_style=BRAND, padding=(1, 3), expand=False
-    ))
+    console.print(
+        Panel(
+            f"[bold {BRAND}]canary[/bold {BRAND}]  [dim]live demo[/dim]\n\n"
+            f"  [dim]{'auto-advance  (AUTO=1)' if AUTO else 'press Enter to advance each step'}[/dim]\n"
+            f"  [dim]uses the real canary cli in an isolated temp home/workspace[/dim]\n"
+            f"  [dim]{'real claude mode' if args.real_claude else 'demo agent mode'}[/dim]\n"
+            f"  [dim]Ctrl-C to exit at any time[/dim]",
+            border_style=BRAND,
+            padding=(1, 3),
+            expand=False,
+        )
+    )
     console.print()
 
     if not AUTO:
-        console.print(f"  [dim]press Enter to begin...[/dim]")
+        console.print("  [dim]press Enter to begin...[/dim]")
         pause()
 
-    phase_install()
-    phase_guard()
-    phase_checkpoint()
-    phase_activate_monitoring()
-    phase_risky_session()
-    phase_review_logs()
-    phase_rollback()
-    phase_summary()
+    if args.real_claude:
+        temp_root, home_dir, project_dir, claude_path, env, backend_label = _prepare_real_environment()
+    else:
+        temp_root, home_dir, project_dir, claude_path, env, backend_label = _prepare_fake_environment()
+
+    try:
+        if args.real_claude:
+            _run_real_demo(
+                temp_root=temp_root,
+                home_dir=home_dir,
+                project_dir=project_dir,
+                real_claude=claude_path,
+                env=env,
+                backend_label=backend_label,
+                prompt=args.prompt,
+            )
+        else:
+            _run_fake_demo(
+                temp_root=temp_root,
+                home_dir=home_dir,
+                project_dir=project_dir,
+                fake_claude=claude_path,
+                env=env,
+                backend_label=backend_label,
+            )
+
+        hero(
+            "Demo Complete",
+            "\n".join(
+                [
+                    "[dim]this run exercised the real canary cli, guard shim, hooks, watcher, log, checkpoints, and rollback[/dim]",
+                    f"[dim]claude mode[/dim]    {'real' if args.real_claude else 'demo'}",
+                    f"[dim]temp demo root[/dim]  {temp_root}",
+                    "[dim]set KEEP_DEMO=1 or pass --keep-demo to leave the temp workspace on disk for inspection[/dim]",
+                ]
+            ),
+        )
+
+    finally:
+        _best_effort_stop(env, project_dir)
+        if keep_demo:
+            note(f"kept demo files at {temp_root}")
+            console.print()
+        else:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -536,4 +612,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         console.print("\n\n  [dim]demo interrupted[/dim]\n")
-        sys.exit(0)
+        raise SystemExit(0)

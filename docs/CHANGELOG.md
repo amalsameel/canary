@@ -858,3 +858,49 @@ This file is maintained by AI coding agents. Every session must:
 - `canary/cli.py`
 - `canary/watcher.py`
 - `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-19 06:33] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- refreshed the user-facing docs to match the current repo instead of the older hackathon/spec wording
+- rewrote `README.md` around the actual shipped cli surface:
+  - repo-based install commands
+  - claude-only guard integration
+  - audit / watch / checkpoint flow
+  - online vs local backend behavior
+  - current limitations such as non-installed wrapper scripts
+- updated `docs/README.md` to match the same current usage model
+- replaced the old spec-style `docs/ARCH.md` with a concise architecture overview of the current runtime paths, storage locations, and module map
+- replaced the old hackathon-style `docs/PRD.md` with a current-scope product document
+- replaced the outdated phased build prompt in `docs/MASTERPROMPT.md` with a short note pointing future sessions at the real sources of truth
+- expanded `canary/docs_topics.py` so `canary docs` now reflects the real commands and limitations in the codebase
+
+### Verification run
+- manually cross-checked the updated docs against:
+  - `canary/cli.py`
+  - `canary/guard.py`
+  - `canary/guard_shim.py`
+  - `canary/watcher.py`
+  - `canary/local_embeddings.py`
+  - `canary/ibm/embeddings.py`
+  - `canary/ibm/generate.py`
+- attempted runtime verification, but the local environment is missing installed cli dependencies such as `click` and `pytest`
+
+### Left incomplete / known issues
+- the package metadata still installs only `canary`; if standalone wrapper scripts are meant to be public, `pyproject.toml` still needs entrypoints for them
+- hidden maintenance commands like `canary hook status` remain intentionally undocumented in most user-facing places
+
+### Next session should start with
+- if desired, align package metadata and console entrypoints with the new docs so install behavior is as polished as the documentation
+- if desired, add a lightweight docs smoke test that checks `README.md` / `docs/README.md` command examples against `canary/cli.py`
+
+### Files modified
+- `README.md`
+- `docs/README.md`
+- `docs/ARCH.md`
+- `docs/PRD.md`
+- `docs/MASTERPROMPT.md`
+- `canary/docs_topics.py`
+- `docs/CHANGELOG.md`

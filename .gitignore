@@ -19,6 +19,11 @@ env/
 # Canary session state
 .canary/
 
+# Node
+node_modules/
+package-lock.json
+package.json
+
 # OS
 .DS_Store
 Thumbs.db
