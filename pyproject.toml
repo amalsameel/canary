@@ -44,9 +44,7 @@ dev = [
 ]
 
 [project.scripts]
-canary = "canary.cli:cli"
-codex-safe = "canary.wrappers:codex_safe"
-claude-safe = "canary.wrappers:claude_safe"
+canary = "canary.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/amalsameel/canary"

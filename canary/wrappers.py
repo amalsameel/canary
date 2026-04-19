@@ -120,8 +120,6 @@ def _resolve_agent(binary_name: str) -> str:
 
 
 def _mode_args(binary_name: str, mode: str) -> list[str]:
-    if binary_name == "codex":
-        return [] if mode == "interactive" else ["exec"]
     if binary_name == "claude":
         return [] if mode == "interactive" else ["-p"]
     return []
@@ -184,17 +182,6 @@ def _run_wrapper(
         binary_path=None,
         watch_label=watch_label,
     )
-
-
-def codex_safe(argv: list[str] | None = None) -> None:
-    """gate a prompt, then run codex."""
-    parser = _build_parser("codex-safe", "gate a prompt, then run codex")
-    raise SystemExit(_run_wrapper(
-        parser=parser,
-        argv=argv,
-        binary_name="codex",
-        watch_label="codex-safe",
-    ))
 
 
 def claude_safe(argv: list[str] | None = None) -> None:

@@ -54,6 +54,9 @@ def get_embedding(text: str) -> list[float]:
             "or switch to `canary mode local`."
         )
 
+    from ..usage import check_and_increment
+    check_and_increment("embed")
+
     token = get_iam_token()
     for attempt in range(4):
         resp = requests.post(

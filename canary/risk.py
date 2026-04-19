@@ -1,12 +1,20 @@
 """Risk scoring and prompt rendering."""
+from rich.panel import Panel
 from rich.table import Table
 
-from .ui import BRAND, console, divider, ok
+from .ui import BRAND, console
 
 SEVERITY_COLOR = {
     "CRITICAL": "bold red",
-    "HIGH": "red",
-    "MEDIUM": "yellow",
+    "HIGH":     "red",
+    "MEDIUM":   "yellow",
+}
+
+SEVERITY_ICON = {
+    "CRITICAL": "✕",
+    "HIGH":     "■",
+    "MEDIUM":   "▲",
+    "LOW":      "◆",
 }
 
 
@@ -27,43 +35,43 @@ def bar_color(score: int) -> str:
 
 
 def render_risk_bar(score: int, label: str = "risk") -> None:
+    console.print(Panel(_risk_bar_line(score, label=label),
+                        border_style=BRAND, padding=(1, 3), expand=False))
+    console.print()
+
+
+def _risk_bar_line(score: int, label: str = "risk") -> str:
     score = max(0, min(100, int(score)))
     verdict, color = risk_level(score)
     filled = max(0, min(20, round(score / 5)))
     bar = "█" * filled + "░" * (20 - filled)
-    console.print(
-        f"  [dim]{label:<10}[/dim]  "
+    icon = "●" if verdict == "clear" else ("▲" if verdict == "review" else "■")
+    return (
+        f"[dim]{label:<10}[/dim]  "
         f"[{color}]{bar}[/{color}]  "
         f"[{color}]{score:>3}[/{color}]  "
-        f"[{color}]{verdict}[/{color}]"
+        f"[{color}]{icon}  {verdict}[/{color}]"
     )
 
 
 def render_findings(findings: list, score: int) -> None:
     if findings:
-        divider("findings")
-        console.print()
-
-        table = Table(show_header=False, box=None, padding=(0, 1), pad_edge=False)
-        table.add_column(width=10, no_wrap=True)
+        table = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
+        table.add_column(width=12, no_wrap=True)
         table.add_column()
-
         for finding in findings:
             color = SEVERITY_COLOR.get(finding.severity, "white")
+            icon = SEVERITY_ICON.get(finding.severity, "◆")
             table.add_row(
-                f"[{color}]{finding.severity.lower()}[/{color}]",
-                f"[white]{finding.description.lower()}[/white]",
+                f"[{color}]{icon}  {finding.severity.lower()}[/{color}]",
+                f"[dim]{finding.description.lower()}[/dim]",
             )
-
-        console.print(table)
+        console.print(Panel(table, border_style=BRAND, padding=(1, 2), expand=False))
         console.print()
     else:
-        divider("result")
-        console.print()
-        ok("clear")
+        console.print(Panel(f"[{BRAND}]●[/{BRAND}]  [dim]clear — no findings[/dim]",
+                            border_style=BRAND, padding=(1, 3), expand=False))
         console.print()
 
-    divider("risk")
-    console.print()
-    render_risk_bar(score)
+    console.print(Panel(_risk_bar_line(score), border_style=BRAND, padding=(1, 3), expand=False))
     console.print()

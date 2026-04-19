@@ -41,17 +41,17 @@ def test_remove_guard_deletes_shim(monkeypatch, tmp_path):
     shim_dir.mkdir()
     home_dir.mkdir()
 
-    _make_executable(real_bin_dir / "codex", "#!/usr/bin/env bash\nexit 0\n")
+    _make_executable(real_bin_dir / "claude", "#!/usr/bin/env bash\nexit 0\n")
 
     monkeypatch.setenv("PATH", str(real_bin_dir))
     monkeypatch.setattr("canary.guard.CONFIG_DIR", home_dir / ".canary")
     monkeypatch.setattr("canary.guard.CONFIG_PATH", home_dir / ".canary" / "guard.json")
     monkeypatch.setattr("canary.guard.DEFAULT_SHIM_DIR", shim_dir)
 
-    record = install_guard("codex", watch=False, shim_dir=shim_dir)
+    record = install_guard("claude", watch=False, shim_dir=shim_dir)
     assert Path(record.shim_path).exists()
 
-    remove_guard("codex")
+    remove_guard("claude")
 
     assert not Path(record.shim_path).exists()
-    assert "codex" not in guard_records()
+    assert "claude" not in guard_records()

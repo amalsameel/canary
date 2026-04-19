@@ -20,9 +20,9 @@ from .session import log_event
 from .ui import BRAND, command_bar, console, divider, fail, fields, hero, note, ok, warn
 
 EVENT_SYMBOLS = {
-    "modified": "•",
-    "created": "+",
-    "deletion": "−",
+    "modified": "◆",
+    "created": "✦",
+    "deletion": "✕",
 }
 
 
@@ -39,12 +39,12 @@ def _drift_bar(drift: float) -> str:
 
 def _drift_status(drift: float, threshold: float) -> str:
     if drift > threshold:
-        return f"[bold red]alert[/bold red]  [dim](> {threshold})[/dim]"
+        return f"[bold red]■  alert[/bold red]  [dim](> {threshold})[/dim]"
     if drift > threshold * 0.5:
-        return "[yellow]review[/yellow]"
+        return "[yellow]▲  review[/yellow]"
     if drift > 0.0:
-        return f"[{BRAND}]stable[/{BRAND}]"
-    return "[dim]match[/dim]"
+        return f"[{BRAND}]●  stable[/{BRAND}]"
+    return "[dim]●  match[/dim]"
 
 
 class CanaryHandler(FileSystemEventHandler):
@@ -54,6 +54,9 @@ class CanaryHandler(FileSystemEventHandler):
         self.target = os.path.abspath(target)
         self.recent_changes: list[float] = []
         self._last_event: dict[str, float] = {}
+        self.last_activity: float = time.time()
+        self.event_count: int = 0
+        self.drift_alerts: int = 0
 
     def on_modified(self, event):
         if not event.is_directory:
@@ -140,7 +143,7 @@ class CanaryHandler(FileSystemEventHandler):
         self.recent_changes = [t for t in self.recent_changes if now - t < window]
         self.recent_changes.append(now)
         if len(self.recent_changes) > self.cfg["change_rate_limit"]:
-            console.print(f"  [dim]{_ts()}[/dim]  [yellow]![/yellow]  [yellow]{len(self.recent_changes)} changes in {window}s[/yellow]")
+            console.print(f"  [dim]{_ts()}[/dim]  [yellow]▲[/yellow]  [yellow]{len(self.recent_changes)} changes in {window}s[/yellow]")
             render_risk_bar(55, "change rate")
             console.print()
             log_event("change_rate_alert", {"count": len(self.recent_changes)}, target=self.target)
@@ -161,9 +164,9 @@ class CanaryHandler(FileSystemEventHandler):
             note(f"embedding failed for {rel}: {exc}")
             return
 
-        symbol = EVENT_SYMBOLS.get(event_type, "•")
+        symbol = EVENT_SYMBOLS.get(event_type, "◆")
         color = BRAND if event_type == "created" else "white"
-        console.print(f"  [dim]{_ts()}[/dim]  [{color}]{symbol}[/{color}]  [white]{rel}[/white]")
+        console.print(f"  [dim]{_ts()}  │[/dim]  [{color}]{symbol}[/{color}]  [white]{rel}[/white]")
 
         baseline_embedding = self.baseline.get(path)
         if baseline_embedding is not None:
@@ -171,7 +174,7 @@ class CanaryHandler(FileSystemEventHandler):
             drift = round(1 - similarity, 4)
             filename = os.path.basename(path)
             threshold = self.cfg["drift_entry_point"] if filename in self.cfg["entry_points"] else self.cfg["drift_alert"]
-            console.print(f"        [dim]drift[/dim]  {_drift_bar(drift)}  {_drift_status(drift, threshold)}")
+            console.print(f"            [dim]╰─  drift[/dim]  {_drift_bar(drift)}  {_drift_status(drift, threshold)}")
 
             if drift > threshold:
                 log_event("drift_alert", {"file": rel, "drift": drift, "threshold": threshold}, target=self.target)
@@ -179,12 +182,17 @@ class CanaryHandler(FileSystemEventHandler):
             note("baseline captured")
 
         self.baseline[path] = new_embedding
+        self.last_activity = time.time()
+        self.event_count += 1
+        if drift > threshold if baseline_embedding is not None else False:
+            self.drift_alerts += 1
         log_event(event_type, {"file": rel}, target=self.target)
         console.print()
 
 
-def _build_baseline(target: str, cfg: dict) -> dict[str, list[float]]:
+def _build_baseline(target: str, cfg: dict) -> tuple[dict[str, list[float]], int]:
     baseline: dict[str, list[float]] = {}
+    skipped = 0
     target = os.path.abspath(target)
 
     for root, dirs, files in os.walk(target):
@@ -217,10 +225,10 @@ def _build_baseline(target: str, cfg: dict) -> dict[str, list[float]]:
 
             try:
                 baseline[path] = get_embedding(content)
-            except Exception as exc:
-                note(f"baseline skipped for {path}: {exc}")
+            except Exception:
+                skipped += 1
 
-    return baseline
+    return baseline, skipped
 
 
 def _mode_label() -> str:
@@ -236,18 +244,69 @@ def _make_observer():
     return Observer(), False
 
 
-def start_watch(target: str):
+_AUDIT_EVENTS_PATH = Path.home() / ".canary" / "audit_events.jsonl"
+
+
+def _wait_for_session(continuous: bool) -> bool:
+    """Block until a new audit-hook event appears (agent has started).
+
+    Returns True when a session is detected, False if interrupted.
+    In continuous mode, skip waiting and return True immediately.
+    """
+    if continuous:
+        return True
+
+    start_pos = _AUDIT_EVENTS_PATH.stat().st_size if _AUDIT_EVENTS_PATH.exists() else 0
+
+    console.print(
+        f"  [bold {BRAND}]◉[/bold {BRAND}]  "
+        f"ready  ·  waiting for agent session to begin"
+    )
+    console.print(
+        f"  [dim]╰─  monitoring activates on the first tool call[/dim]"
+    )
+    console.print()
+
+    try:
+        while True:
+            time.sleep(0.4)
+            if not _AUDIT_EVENTS_PATH.exists():
+                continue
+            if _AUDIT_EVENTS_PATH.stat().st_size > start_pos:
+                return True
+    except KeyboardInterrupt:
+        return False
+
+
+def start_watch(target: str, *, idle_timeout: int = 0):
+    """Watch *target* for agent activity.
+
+    idle_timeout > 0: exit automatically after that many seconds of no file events.
+    idle_timeout == 0: run until Ctrl-C (continuous mode).
+    """
+    continuous = idle_timeout == 0
     target = os.path.abspath(target)
     cfg = load_config(target)
-    hero(subtitle=_mode_label(), path=target)
+    mode = "continuous" if continuous else "next session"
+    hero(subtitle=f"{_mode_label()}  [dim]·  {mode}[/dim]", path=target)
     command_bar("watch")
 
+    if not _wait_for_session(continuous):
+        note("watch cancelled")
+        console.print()
+        return
+
     with console.status("[dim]indexing workspace...[/dim]", spinner="dots"):
-        baseline = _build_baseline(target, cfg)
+        baseline, skipped = _build_baseline(target, cfg)
         checkpoint_id = take_snapshot(target)
 
-    ok(f"{len(baseline)} files indexed", "watching for changes")
-    fields([("checkpoint", checkpoint_id)])
+    idle_detail = f"exits after {idle_timeout}s idle" if not continuous else "Ctrl-C to stop"
+    ok("session detected", f"{len(baseline)} files indexed  ·  monitoring active")
+    if skipped and not baseline:
+        warn("drift detection disabled", "embedding API unavailable — run `canary mode local` or check credentials")
+    elif skipped:
+        note(f"{skipped} file(s) skipped — drift detection may be incomplete")
+    fields([("checkpoint", checkpoint_id), ("mode", idle_detail)])
 
     observer, using_polling = _make_observer()
     if using_polling:
@@ -263,9 +322,17 @@ def start_watch(target: str):
     try:
         while True:
             time.sleep(0.5)
+            if not continuous and (time.time() - handler.last_activity) >= idle_timeout:
+                break
     except KeyboardInterrupt:
+        pass
+    finally:
         observer.stop()
     observer.join()
+
     console.print()
-    note("watch stopped")
+    if not continuous:
+        note(f"session ended  ·  {handler.event_count} file event(s)  ·  {handler.drift_alerts} drift alert(s)")
+    else:
+        note("watch stopped")
     console.print()

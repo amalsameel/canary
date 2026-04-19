@@ -1,4 +1,4 @@
-"""Direct CLI guardrail integration for Claude Code and Codex."""
+"""Direct CLI guardrail integration for Claude Code."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,16 +30,26 @@ def _ensure_dirs(shim_dir: Path) -> None:
 
 def load_guard_config() -> dict:
     if not CONFIG_PATH.exists():
-        return {"agents": {}}
+        return {"enabled": True, "agents": {}}
     try:
         return json.loads(CONFIG_PATH.read_text())
     except Exception:
-        return {"agents": {}}
+        return {"enabled": True, "agents": {}}
 
 
 def save_guard_config(config: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(config, indent=2))
+
+
+def get_enabled() -> bool:
+    return bool(load_guard_config().get("enabled", True))
+
+
+def set_enabled(value: bool) -> None:
+    config = load_guard_config()
+    config["enabled"] = value
+    save_guard_config(config)
 
 
 def resolve_real_binary(agent: str, *, shim_dir: Path | None = None) -> str | None:
@@ -75,6 +85,7 @@ def install_guard(agent: str, *, watch: bool = False, shim_dir: Path | None = No
 
     config = load_guard_config()
     config.setdefault("agents", {})
+    config.setdefault("enabled", True)
     config["agents"][agent] = {
         "real_binary": real_binary,
         "shim_path": str(shim_path),

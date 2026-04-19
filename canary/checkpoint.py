@@ -60,6 +60,23 @@ def list_checkpoints(target: str = ".") -> list[dict]:
     return out
 
 
+def delete_checkpoint(target: str, checkpoint_id: str) -> bool:
+    """Delete a single checkpoint by id. Returns True if it existed."""
+    path = os.path.join(_checkpoints_dir(target), checkpoint_id)
+    if not os.path.exists(path):
+        return False
+    shutil.rmtree(path)
+    return True
+
+
+def delete_all_checkpoints(target: str) -> int:
+    """Delete every checkpoint. Returns the count removed."""
+    checkpoints = list_checkpoints(target)
+    for c in checkpoints:
+        shutil.rmtree(os.path.join(_checkpoints_dir(target), c["id"]), ignore_errors=True)
+    return len(checkpoints)
+
+
 def rollback(target: str, checkpoint_id: str | None = None) -> tuple[str, str]:
     """Revert target to the given (or most recent) checkpoint.
 

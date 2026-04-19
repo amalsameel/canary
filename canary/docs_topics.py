@@ -36,25 +36,23 @@ DOC_TOPICS = {
         ],
     },
     "guard": {
-        "summary": "direct claude code and codex integration",
+        "summary": "direct claude code integration",
         "lines": [
             "  canary guard install",
             "  canary guard status",
             "  export PATH=\"$HOME/.canary/bin:$PATH\"",
             "",
-            "  this installs `claude` / `codex` shims in front of the real binaries",
+            "  this installs a `claude` shim in front of the real binary",
             "  so command-line prompts are checked before they reach the agent.",
         ],
     },
     "wrappers": {
-        "summary": "safe wrapper commands for claude and codex",
+        "summary": "safe wrapper command for claude code",
         "lines": [
             "  claude-safe \"refactor auth flow\"",
-            "  codex-safe \"review latest changes\"",
             "  claude-safe --watch \"fix the login bug\"",
             "",
-            "  wrapper commands gate the initial prompt, then launch the real",
-            "  cli with the same prompt.",
+            "  gates the initial prompt, then launches claude with the same prompt.",
         ],
     },
     "watch": {
