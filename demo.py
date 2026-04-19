@@ -134,15 +134,7 @@ def audit_hook_line(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def phase_install() -> None:
-    section("phase 1 · installation", "install Claude Code and canary")
-
-    cmd("npm install -g @anthropic-ai/claude-code")
-    wait(0.8)
-    console.print("  [dim]added 1 package, audited 1 package in 3s[/dim]")
-    console.print(f"  [bold {BRAND}]✓[/bold {BRAND}]  installed claude-code")
-    wait(0.5)
-
-    advance_prompt()
+    section("phase 1 · installation", "install canary")
 
     cmd("pip install canary-watch")
     wait(0.8)
