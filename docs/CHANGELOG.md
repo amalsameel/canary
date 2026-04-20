@@ -371,6 +371,123 @@ This file is maintained by AI coding agents. Every session must:
 
 ---
 
+## [2026-04-20 13:18] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- redesigned the shared terminal UI away from boxed panels and toward a lighter text-first layout with more whitespace, centered logo work, and softer separators
+- rebuilt the protected launch surface used by `canary on` / `canary watch`:
+  - it now uses the standalone block `C` mark derived from the main Canary wordmark so the launch screen branding matches the home screen logo
+  - the surface now speaks in AI-agent language instead of repeatedly saying Claude for generic handoff states
+  - added friendly slash commands inside the protected prompt flow: `/help`, `/status`, `/off`, and `/exit`
+- reworked the pipeline handoff animation so it keeps the motion-heavy unicode flow but drops the framed panel styling
+- removed the old “live audit panel” feel from `canary audit`:
+  - audit now opens as a lightweight stream with a waiting spinner instead of a boxed surface
+  - event detail lines were flattened so background and hook output no longer read like faux panels
+- aligned the shared risk and result rendering with the new flatter CLI style so prompt reviews, watch output, and command summaries feel visually consistent
+- refreshed the user-facing copy in the home screen, built-in docs, and README so the product speaks more generically about AI agents where appropriate while still preserving explicit Claude-only notes where they are technically necessary
+- verified the change set locally:
+  - `./.venv/bin/python -m py_compile canary/ui.py canary/cli.py canary/risk.py canary/watcher.py`
+  - `./.venv/bin/python -m canary.cli`
+  - `./.venv/bin/python -m canary.cli watch . --prompt "fix the login bug" --check-only`
+  - `./.venv/bin/python -m canary.cli audit --idle 1`
+  - `./.venv/bin/python -m canary.cli docs watch`
+  - `./.venv/bin/python -m pytest -q` (`41 passed`)
+
+### Left incomplete / known issues
+- the protected watch flow still launches Claude specifically under the hood today because the watcher activation path depends on Claude hook/transcript signals; the copy is more generic now, but the technical dependency has not changed
+- hidden maintenance commands and internal docstrings still mention Claude explicitly where they refer to the actual hook implementation
+
+### Next session should start with
+- if desired, add a true multiline prompt composer for the protected launch surface so the new visual design is matched by a richer editing experience
+- if desired, explore a Codex-compatible watch activation path so the protected launch surface can become technically agent-agnostic rather than only visually agent-agnostic
+
+### Files modified
+- `canary/ui.py`
+- `canary/cli.py`
+- `canary/risk.py`
+- `canary/docs_topics.py`
+- `README.md`
+- `docs/README.md`
+- `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 12:48] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- expanded direct guard interception beyond Claude so `canary guard install` now installs guarded launch shims for both `claude` and `codex` when those binaries are available in `PATH`
+- generalized `canary.guard_shim` to dispatch per agent instead of hardcoding Claude, while still preserving one-shot `--ignore` and `--safe` behavior
+- added Codex-aware prompt parsing for:
+  - plain `codex "prompt"` launches
+  - option-prefixed launches like `codex --search "prompt"`
+  - non-interactive `codex exec "prompt"` runs, including cases with global options before `exec`
+- changed the guarded handoff path to forward the original argv to the real agent binary after screening so Codex and Claude both keep their expected CLI behavior
+- updated setup, guard install, and built-in docs so the CLI now describes `claude` + `codex` shims correctly while keeping Claude hooks as a separate capability
+- added regression coverage for Codex guard install and Codex shim parsing, then re-ran the full suite successfully (`41 passed`)
+
+### Left incomplete / known issues
+- Codex currently gets launch-time prompt screening only; hook-based in-session prompt screening, transcript tailing, audit integration, and the protected watch launcher still depend on Claude-specific hooks and transcript files
+- helper wrapper entrypoints are still not packaged as standalone commands; the supported path is installing the guarded shims into `~/.canary/bin`
+
+### Next session should start with
+- if desired, add a Codex-specific protected launch surface comparable to `canary watch` instead of keeping watch as a Claude-first workflow
+- if desired, explore whether Codex exposes a stable local event or transcript surface that Canary can use for in-session auditing similar to Claude hooks
+
+### Files modified
+- `canary/guard_shim.py`
+- `canary/wrappers.py`
+- `canary/guard.py`
+- `canary/cli.py`
+- `canary/docs_topics.py`
+- `tests/test_guard.py`
+- `tests/test_guard_shim.py`
+- `README.md`
+- `docs/README.md`
+- `docs/ARCH.md`
+- `docs/PRD.md`
+- `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 12:24] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- finished the in-progress watch/audit polish pass left mid-flight in another session
+- made the `canary watch` status presentation consistent with the newer pipeline direction:
+  - kept the flowing unicode handoff animation with a moving `◈` pulse through the pipe segments
+  - removed arrow-style separators from the static watch status row so the non-animated UI also reads like a pipeline instead of a stepper
+- changed `canary audit` to foreground-first behavior:
+  - `canary audit` now stays in the current terminal by default so Bash approval assessments can appear live while Claude waits for consent
+  - `--background` now opts back into the older log + pid behavior instead of being the default mental model
+  - refreshed audit copy so it explicitly tells users to run it in a second pane and explains that it tails Claude transcript JSONL files
+- updated user docs and built-in docs topics to match the new foreground-first audit flow
+- verified locally:
+  - `./.venv/bin/python -m pytest -q` passes (`33 passed`)
+  - `./.venv/bin/python -m canary.cli audit --help` shows the new `--background` option and live-first description
+  - `./.venv/bin/python -m canary.cli audit --idle 1` runs in the foreground and exits cleanly after idle timeout
+  - `./.venv/bin/python -m canary.cli watch . --prompt "fix the login bug" --check-only` renders the updated pipeline-style status panel
+
+### Left incomplete / known issues
+- background audit compatibility was not fully re-verified inside this sandbox because writing `~/.canary/audit.log` is blocked here; the foreground live path is the primary supported flow now
+- multiline prompt composition inside the protected watch panel is still limited by the current single-line terminal input path
+- an untracked `AGENTS.md` is present in the worktree and was left untouched
+
+### Next session should start with
+- if desired, replace the protected watch input with a fuller multiline TUI editor so the input experience matches the upgraded panel styling
+- if desired, verify `canary audit --background` on a fully unsandboxed local shell and decide whether to keep or eventually hide that compatibility mode
+
+### Files modified
+- `canary/cli.py`
+- `canary/ui.py`
+- `canary/docs_topics.py`
+- `README.md`
+- `docs/README.md`
+- `docs/ARCH.md`
+- `docs/PRD.md`
+- `docs/CHANGELOG.md`
+
+---
+
 ## [2026-04-19 02:36] Model: GPT-5 Codex | Status: COMPLETED
 
 ### Completed this session
@@ -1062,4 +1179,84 @@ This file is maintained by AI coding agents. Every session must:
 ### Files modified
 - `canary/ui.py`
 - `canary/cli.py`
+- `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 14:05] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- pushed the shared CLI visuals back toward a boxier retro style:
+  - restored framed Rich surfaces with neon cyan / magenta accents, shaded unicode rails, and heavier boxed status cards
+  - changed the protected launch input marker to `⎿ task` and reused `⎿` as the nested detail glyph across launch, audit, and status output
+  - rebuilt the launch / handoff presentation around heavier panel chrome, nested signal-lane cards, and a more pulsing unicode pipeline animation
+- upgraded prompt screening output:
+  - `canary prompt`, guarded shims, and watch-screen prompt review now render inside the retro `PROMPT MATRIX`
+  - added a dedicated risk-assessment panel whenever prompt risk reaches `35%` or higher
+  - kept lower-risk prompts clean so the extra assessment card only appears when the score is materially elevated
+- made the watch / audit flow more specific and less implementation-heavy:
+  - the watch surface now shows the real handoff target (`claude code`) instead of generic “ai agent” copy
+  - slash-help and launch status now explicitly tell users to open another terminal and run `canary audit`
+  - removed the “under the hood” audit wording and replaced it with direct operational guidance
+- updated user-facing docs and built-in docs to match:
+  - README + docs/README now spell out the two-terminal audit workflow step by step
+  - built-in `canary docs audit` and `canary docs watch` now tell users exactly when to open another terminal and when the risk-assessment panel appears
+- added regression coverage for the new assessment threshold in `tests/test_risk.py`
+
+### Left incomplete / known issues
+- the retro surfaces are richer and more animated now, but the input path is still single-line terminal input rather than a full multiline TUI editor
+- `canary watch` still launches Claude specifically today; the new UI makes that target explicit instead of pretending the launcher is fully agent-agnostic
+
+### Next session should start with
+- if desired, replace the current single-line protected prompt input with a fuller multiline editor so the retro launch surface has a matching input experience
+- if desired, extend the same boxed retro treatment into more of the watcher event stream so drift/change alerts feel even closer to the launch surface styling
+
+### Files modified
+- `canary/ui.py`
+- `canary/risk.py`
+- `canary/cli.py`
+- `canary/docs_topics.py`
+- `README.md`
+- `docs/README.md`
+- `tests/test_risk.py`
+- `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 13:56] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- replaced the current retro/neon terminal presentation with a simpler white-and-green visual system across the shared CLI surfaces
+- rebuilt the protected `canary on` / `canary watch` experience into a unified command window:
+  - the window now renders as one structured panel instead of the oversized launch box
+  - the input line now reads as `task or /command` so plain tasks and Canary control commands share the same surface
+  - the initial launch state stays branded, but the repeated command flow is intentionally compact
+- added a live in-window slash-command palette for the command window:
+  - typing `/` now filters matching commands in place
+  - tab completes to the top match
+  - the palette now routes core Canary actions like docs, usage, mode, guard, audit, watch, checkpoint, checkpoints, rollback, log, and setup without leaving the window
+- simplified the loading/handoff presentation:
+  - replaced the heavier boxed pipeline with a lighter structured loading panel
+  - switched the motion to transforming unicode glyphs with pulsing text instead of the previous maximalist signal-lane treatment
+- aligned prompt review and risk output with the new interface so prompt scans, usage, logs, and watch state all share the same minimal visual language
+- updated user-facing docs and built-in docs to describe the unified command window and `/` palette
+- added regression coverage for the launch-palette matching/completion helpers and re-ran the full suite successfully (`47 passed`)
+
+### Left incomplete / known issues
+- the live slash-command search only appears on true TTY terminals; the code falls back to the older line-input path when raw terminal input is unavailable
+- the protected watch handoff is still Claude-first under the hood because the watch activation path depends on Claude-specific hook/transcript support
+
+### Next session should start with
+- if desired, add selection with arrow keys inside the command palette instead of top-match tab completion only
+- if desired, promote more of the slash-command routing into dedicated reusable command handlers so the click command bodies and in-window actions share even more code
+
+### Files modified
+- `canary/ui.py`
+- `canary/risk.py`
+- `canary/cli.py`
+- `canary/docs_topics.py`
+- `README.md`
+- `docs/README.md`
+- `docs/ARCH.md`
+- `tests/test_launch_palette.py`
 - `docs/CHANGELOG.md`

@@ -1,14 +1,14 @@
 # canary
 
-Canary is a terminal safety layer for AI coding sessions. In the current codebase it is centered on Claude Code: it can review prompts, install a guarded `claude` shim, audit tool calls, watch a repo for risky drift, and keep checkpoints ready for rollback.
+Canary is a terminal safety layer for AI coding sessions. In the current codebase it is Claude-first, but it can now intercept both `claude` and `codex` launches to screen prompts before they reach the real agent, while deeper in-session coverage remains centered on Claude Code.
 
 ## What Ships Today
 
 - `canary prompt` scans a prompt for secrets, PII, sensitive paths, and semantically similar confidential content before you hand it to an agent.
-- `canary on` / `canary off` toggle prompt screening for installed Claude guard shims.
-- `canary guard install` installs a guarded `claude` shim in `~/.canary/bin` and Claude hooks in `~/.claude/settings.json`, including in-session prompt screening and Bash permission-request coverage.
-- `canary audit` tails risky Bash / Write / Edit activity from the next Claude session, including pending Bash intents pulled from Claude transcript JSONL files.
-- `canary watch` opens a protected Claude launcher by default, then starts the watcher, builds a file baseline, auto-creates a checkpoint, and monitors semantic drift and sensitive-file writes.
+- `canary on` / `canary off` toggle prompt screening for installed `claude` and `codex` guard shims.
+- `canary guard install` installs guarded `claude` and `codex` shims in `~/.canary/bin` when those binaries are available, and also adds Claude session integration in `~/.claude/settings.json` for in-session protection.
+- `canary audit` follows risky Bash / Write / Edit activity from the next supported agent session in the current terminal by default.
+- `canary watch` opens a unified command window by default, then starts the watcher, builds a file baseline, auto-creates a checkpoint, and monitors semantic drift and sensitive-file writes.
 - `canary checkpoint`, `canary checkpoints`, `canary rollback`, and `canary log` manage snapshots and session history.
 - `canary mode` switches between online IBM watsonx.ai and local on-device Granite embeddings.
 - `canary usage` shows daily soft usage limits for IBM online generation and embeddings.
@@ -39,7 +39,7 @@ The PyPI package name is `canary-tool`, and the installed command is `canary`.
 
 ## Quick Start
 
-Set up the backend and optional Claude integration:
+Set up the backend and optional AI agent integration:
 
 ```bash
 canary setup
@@ -52,26 +52,31 @@ canary prompt "fix the login bug"
 canary prompt "here is my key sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ" --strict
 ```
 
-Install the Claude guard shim:
+Install the guarded agent shims:
 
 ```bash
 canary guard install
 export PATH="$HOME/.canary/bin:$PATH"
 ```
 
-Turn prompt screening on or off for guarded Claude launches:
+Turn prompt screening on or off for guarded `claude` / `codex` launches:
 
 ```bash
 canary on
 canary off
 ```
 
-Start the transcript-aware auditor and protected watcher:
+Open the live safety feed in another terminal, then launch from your main terminal:
 
 ```bash
+# terminal 2
 canary audit
+
+# terminal 1
 canary watch .
 ```
+
+Inside the Canary window, type `/` to search commands like `/docs`, `/usage`, `/guard`, `/watch`, `/checkpoint`, and `/mode` without leaving the same surface.
 
 Inspect or restore a session:
 
@@ -87,7 +92,7 @@ canary rollback .
 canary prompt "<text>" [--strict]
 canary on
 canary off
-canary audit [--idle 60] [--log] [--stop]
+canary audit [--idle 60] [--background] [--log] [--stop]
 canary watch [path] [--idle 30] [--continuous] [--prompt TEXT] [--check-only] [--background] [--log] [--stop]
 canary checkpoint [path] [--name NAME] [--delete ID] [--delete-all]
 canary checkpoints [path]
@@ -102,19 +107,21 @@ canary usage
 canary docs [topic]
 ```
 
-`canary hook status` and `canary hook remove` also exist, but they are hidden maintenance commands for the Claude hook wiring.
+`canary hook status` and `canary hook remove` also exist, but they are hidden maintenance commands for the Claude session integration.
 
-## Claude Integration
+## Agent Guard Integration
 
 `canary guard install` does two things:
 
-- installs a `claude` shim in `~/.canary/bin`
-- adds Canary hook commands to `~/.claude/settings.json`
+- installs `claude` and `codex` shims in `~/.canary/bin` when those binaries are present in `PATH`
+- adds Claude session integration to `~/.claude/settings.json`
 
-With the shim installed and `PATH` updated, launch-time Claude prompts are screened before Claude starts. With the hooks installed, prompts submitted from inside Claude are also screened through the `UserPromptSubmit` hook, and Bash permission prompts are visible to Canary through `PermissionRequest` plus transcript tailing. The shim also recognizes:
+With the shims installed and `PATH` updated, launch-time prompts for both `claude` and `codex` are screened before the real binary starts, while preserving the original CLI argv that follows the prompt. With the Claude session integration enabled, prompts submitted from inside Claude are also screened, and `canary audit` can surface risky approvals and tool activity while that session is open. The shims also recognize:
 
 - `-ignore` / `--ignore` to bypass screening for one call
 - `-safe` / `--safe` to force screening for one call even if `canary off` is active
+
+When a screened prompt scores `35%` or higher, Canary now adds a dedicated risk-assessment panel instead of only showing the raw meter.
 
 ## Backends
 
@@ -143,12 +150,16 @@ Important behavior difference:
 Typical guarded workflow:
 
 1. Run `canary guard install` once and export `~/.canary/bin` at the front of `PATH`.
-2. Start `canary audit` to capture risky tool activity and pending Bash intents from the next Claude session.
-3. Run `canary watch .` to open the protected prompt panel; if the prompt is clear, Canary launches Claude and starts the watcher in the background.
-4. Use `canary watch . --background` if you want the old monitor-only behavior without launching Claude.
-5. Use `canary log`, `canary checkpoints`, and `canary rollback` if you need to inspect or restore the session.
+2. Open a second terminal window, tab, or split pane.
+3. In that second terminal, run `canary audit` and keep it open.
+4. In your main terminal, run your normal `claude "..."`, `claude -p "..."`, `codex "..."`, `codex exec "..."`, or `canary watch .` command.
+5. If you use `canary watch .`, type the task at the `> task or /command` prompt in the unified Canary window.
+6. Let Canary screen the prompt first; once the score hits `35%` or higher, the screen includes a risk-assessment panel before any handoff.
+7. If the prompt is clear, Canary hands it off and keeps repo watch running in the background.
+8. Use `canary watch . --background` if you want the old monitor-only behavior without launching the agent.
+9. Use `canary log`, `canary checkpoints`, and `canary rollback` if you need to inspect or restore the session.
 
-`canary watch --continuous` keeps the watcher running until you stop it. `canary audit` now follows the same session via Claude's local transcript JSONL files under `~/.claude/projects/`.
+`canary watch --continuous` keeps the watcher running until you stop it. `canary audit --background` keeps the older log-backed mode if you still want it.
 
 ## Config
 
@@ -184,10 +195,8 @@ Home-directory state lives under `~/.canary/`, including:
 - `usage.json`
 - `audit.log`
 - `watch.log`
-- `audit_events.jsonl`
 - `bin/claude`
-
-`canary audit` also reads Claude's local transcript files under `~/.claude/projects/*.jsonl` when they are available.
+- `bin/codex`
 
 ## Built-In Docs
 
@@ -207,9 +216,8 @@ canary docs usage
 
 ## Current Limitations
 
-- Direct guard installation is currently implemented for `claude` only.
 - The packaged CLI entrypoint is `canary`; wrapper functions like `claude_safe` are present in the codebase but are not installed as standalone scripts.
-- In-session prompt screening relies on Claude hook support; equivalent guard installs for other agent TUIs are not implemented.
+- In-session prompt screening, deeper audit coverage, and the protected watch launcher rely on Claude-specific session support. Codex currently gets launch-time prompt screening only.
 - Local mode covers embeddings only; command auditing falls back to pattern rules instead of a local Granite chat model.
 
 ## Tests

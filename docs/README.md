@@ -28,7 +28,7 @@ The PyPI package name is `canary-tool`, and the installed command is `canary`.
 
 ## Core Workflow
 
-Set up the backend and optional Claude integration:
+Set up the backend and optional AI agent integration:
 
 ```bash
 canary setup
@@ -41,19 +41,24 @@ canary prompt "fix the login bug"
 canary prompt "here is my key sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ" --strict
 ```
 
-Install the guarded Claude shim:
+Install the guarded agent shims:
 
 ```bash
 canary guard install
 export PATH="$HOME/.canary/bin:$PATH"
 ```
 
-Start the transcript-aware auditor and protected watcher:
+Open the live safety feed in another terminal, then launch from your main terminal:
 
 ```bash
+# terminal 2
 canary audit
+
+# terminal 1
 canary watch .
 ```
+
+Inside the Canary window, type `/` to search commands like `/docs`, `/usage`, `/guard`, `/watch`, `/checkpoint`, and `/mode`.
 
 Inspect or restore the repo afterward:
 
@@ -80,20 +85,22 @@ canary mode online
 
 `canary setup` and `canary mode local` profile the machine first and warn when local mode is likely to be slow.
 
-## Claude Guardrails
+## Agent Guardrails
 
-`canary guard install` is currently Claude-only. It installs:
+`canary guard install` installs:
 
-- a `claude` shim in `~/.canary/bin`
-- audit and watch hooks in `~/.claude/settings.json`
-- prompt-screening and Bash permission-request hooks for Claude sessions
+- guarded `claude` and `codex` shims in `~/.canary/bin` when those binaries are available in `PATH`
+- Claude session integration in `~/.claude/settings.json`
+- in-session protection for Claude sessions
 
 The shim supports:
 
 - `-ignore` / `--ignore` to bypass screening once
 - `-safe` / `--safe` to force screening once
 
-With the shim and hooks installed, Canary screens both launch-time prompts and prompts submitted from inside Claude sessions, and `canary audit` can follow pending Bash commands before you approve them.
+With the shims installed, Canary screens launch-time prompts for both `claude` and `codex`, including `codex exec` when a prompt is provided. With the Claude session integration enabled, Canary also screens prompts submitted from inside Claude sessions, and `canary audit` can surface risky approvals and tool activity while that session is live.
+Run `canary audit` in a second terminal pane for the intended live-assessment flow.
+When a screened prompt reaches `35%` or higher, Canary also renders a risk-assessment panel.
 
 ## Command Surface
 
@@ -101,7 +108,7 @@ With the shim and hooks installed, Canary screens both launch-time prompts and p
 canary prompt "<text>" [--strict]
 canary on
 canary off
-canary audit [--idle 60] [--log] [--stop]
+canary audit [--idle 60] [--background] [--log] [--stop]
 canary watch [path] [--idle 30] [--continuous] [--prompt TEXT] [--check-only] [--background] [--log] [--stop]
 canary checkpoint [path] [--name NAME] [--delete ID] [--delete-all]
 canary checkpoints [path]
@@ -145,8 +152,6 @@ Home directory:
 - `~/.canary/usage.json`
 - `~/.canary/audit.log`
 - `~/.canary/watch.log`
-- `~/.canary/audit_events.jsonl`
-- `~/.claude/projects/*.jsonl` (read by `canary audit` for pending Bash intents)
 
 ## Config
 

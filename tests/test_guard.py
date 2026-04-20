@@ -33,6 +33,31 @@ def test_install_guard_creates_shim_and_record(monkeypatch, tmp_path):
     assert records["claude"].watch is True
 
 
+def test_install_guard_supports_codex(monkeypatch, tmp_path):
+    real_bin_dir = tmp_path / "real-bin"
+    shim_dir = tmp_path / "shim-bin"
+    home_dir = tmp_path / "home"
+    real_bin_dir.mkdir()
+    shim_dir.mkdir()
+    home_dir.mkdir()
+
+    _make_executable(real_bin_dir / "codex", "#!/usr/bin/env bash\nexit 0\n")
+
+    monkeypatch.setenv("PATH", str(real_bin_dir))
+    monkeypatch.setattr("canary.guard.CONFIG_DIR", home_dir / ".canary")
+    monkeypatch.setattr("canary.guard.CONFIG_PATH", home_dir / ".canary" / "guard.json")
+    monkeypatch.setattr("canary.guard.DEFAULT_SHIM_DIR", shim_dir)
+
+    record = install_guard("codex", watch=False, shim_dir=shim_dir)
+
+    assert Path(record.shim_path).exists()
+    assert record.real_binary == str(real_bin_dir / "codex")
+    assert "CANARY_GUARD_AGENT=codex" in Path(record.shim_path).read_text()
+
+    records = guard_records()
+    assert records["codex"].watch is False
+
+
 def test_remove_guard_deletes_shim(monkeypatch, tmp_path):
     real_bin_dir = tmp_path / "real-bin"
     shim_dir = tmp_path / "shim-bin"

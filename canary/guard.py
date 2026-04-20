@@ -1,4 +1,4 @@
-"""Direct CLI guardrail integration for Claude Code."""
+"""Direct CLI guardrail integration for supported agent binaries."""
 from __future__ import annotations
 
 from dataclasses import dataclass

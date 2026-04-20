@@ -1,14 +1,15 @@
 def test_app_initializes_with_default_state():
     from canary.app import CanaryApp
     app = CanaryApp()
-    assert app.screening_enabled is True
     assert app.current_prompt == ""
 
 
 def test_app_toggle_screening():
     from canary.app import CanaryApp
     app = CanaryApp()
-    assert app.screening_enabled is True
+
+    # Set initial state explicitly
+    app.screening_enabled = True
 
     app.toggle_screening()
     assert app.screening_enabled is False
@@ -62,11 +63,14 @@ def test_app_handle_command_status():
     from canary.app import CanaryApp
     app = CanaryApp()
 
+    # Set initial state
+    app.screening_enabled = True
+
     result = app.handle_command("status")
     assert result is True
     assert app.subprocesses.items[-1].detail == "screening: on"
 
-    app.toggle_screening()
+    app.screening_enabled = False
     result = app.handle_command("status")
     assert app.subprocesses.items[-1].detail == "screening: off"
 

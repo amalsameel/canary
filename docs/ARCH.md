@@ -7,7 +7,7 @@ This file describes the current codebase. It is an architecture overview, not a 
 Canary currently has four main runtime paths:
 
 1. Direct prompt review with `canary prompt`.
-2. Claude Code prompt screening through an installed `claude` shim and Claude hooks.
+2. Prompt screening through installed `claude` and `codex` shims, plus Claude hooks for in-session coverage.
 3. Background audit of Claude tool activity and pending Bash intents.
 4. Protected Claude launch plus background repository watching with checkpoints and rollback.
 
@@ -26,21 +26,21 @@ The product is centered on terminal workflows and local state. There is no web s
 
 Findings are scored and rendered by `canary/risk.py`. Prompt scans are logged to `.canary/session.json` through `canary/session.py`.
 
-### 2. Claude Guard Integration
+### 2. Agent Guard Integration
 
-`canary guard install` wires Canary into Claude Code in two places:
+`canary guard install` wires Canary into agent launch paths in two places:
 
-- `canary/guard.py` writes a `claude` shim to `~/.canary/bin/claude`
-- `canary/cli.py` installs hook commands into `~/.claude/settings.json`
+- `canary/guard.py` writes guarded shims such as `~/.canary/bin/claude` and `~/.canary/bin/codex`
+- `canary/cli.py` installs hook commands into `~/.claude/settings.json` for Claude sessions
 
 The shim launches `canary.guard_shim`, which:
 
 - loads the stored guard config from `~/.canary/guard.json`
 - strips one-shot flags like `--ignore` and `--safe`
 - screens the initial command-line prompt when screening is enabled
-- forwards the call to the real Claude binary
+- forwards the original argv to the real `claude` or `codex` binary after the prompt passes review
 
-The installed hooks also screen in-session Claude prompts through `UserPromptSubmit`, so guarded sessions cover both launch-time prompts and prompts submitted after Claude is already open.
+The installed hooks also screen in-session Claude prompts through `UserPromptSubmit`, so Claude sessions cover both launch-time prompts and prompts submitted after Claude is already open. Codex currently uses launch-time screening only.
 
 ### 3. Audit Pipeline
 
@@ -52,7 +52,7 @@ The audit path is Claude-hook driven:
 
 These hooks append compact JSON lines to `~/.canary/audit_events.jsonl`.
 
-`canary audit` is a background listener that tails those events and also follows Claude transcript JSONL files under `~/.claude/projects/`. That lets it render pending Bash commands before execution, which is the same phase Claude exposes in its transcript viewer and permission UI. The relevant modules are:
+`canary audit` is now foreground-first: it tails those events in the current terminal and also follows Claude transcript JSONL files under `~/.claude/projects/`. That lets it render pending Bash commands before execution, which is the same phase Claude exposes in its transcript viewer and permission UI. An explicit background mode is still available for the older log-backed workflow. The relevant modules are:
 
 - `canary/bash_auditor.py`
   audits bash commands
@@ -61,7 +61,7 @@ These hooks append compact JSON lines to `~/.canary/audit_events.jsonl`.
 - `canary/prompt_firewall.py`
   scans pending write/edit content and bash output for sensitive material
 - `canary/cli.py`
-  owns hook installation, background listener management, and event rendering
+  owns hook installation, live/background listener management, and event rendering
 
 Mode-specific behavior:
 
@@ -70,13 +70,13 @@ Mode-specific behavior:
 
 ### 4. Watch Pipeline
 
-`canary watch` is now a protected launcher by default. It opens a prompt panel, screens the prompt locally, and only launches Claude when the prompt is clear. The underlying watcher runtime still lives in `canary/watcher.py`.
+`canary watch` is now a protected launcher by default. It opens a unified command window, screens the prompt locally, and only launches Claude when the prompt is clear. The underlying watcher runtime still lives in `canary/watcher.py`.
 
 By default the launch path:
 
-- shows a small terminal panel for the protected prompt
+- shows a structured command window with a live `/` search palette for Canary commands
 - runs the prompt and semantic scanners before any Claude handoff
-- shows a short unicode pipeline animation for the safe handoff
+- shows a short unicode loading animation for the safe handoff
 - starts the repository watcher in the background
 - launches the real Claude binary directly so prompts are not double-screened
 
@@ -158,6 +158,7 @@ Capabilities:
 
 - `~/.canary/guard.json`
 - `~/.canary/bin/claude`
+- `~/.canary/bin/codex`
 - `~/.canary/audit.log`
 - `~/.canary/watch.log`
 - `~/.canary/audit_events.jsonl`
@@ -167,7 +168,7 @@ Capabilities:
 ## Module Map
 
 - `canary/cli.py`
-  main CLI entrypoint and background process management
+  main CLI entrypoint and audit/watch process management
 - `canary/prompt_firewall.py`
   regex, entropy, and PII prompt scanning
 - `canary/semantic_firewall.py`
@@ -197,7 +198,6 @@ Capabilities:
 
 ## Current Limitations
 
-- Direct guard installation is implemented for `claude` only.
 - The package exposes only the `canary` CLI entrypoint; helper wrapper functions are not installed as standalone scripts.
-- In-session prompt screening depends on Claude's hook system; equivalent integrations for other agent TUIs are not implemented.
+- In-session prompt screening, transcript-backed audit, and the protected watch flow depend on Claude's hook and transcript system. Codex currently gets launch-time prompt screening only.
 - Local mode does not have a local chat model for command auditing.
