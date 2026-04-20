@@ -6,7 +6,7 @@ Canary is a terminal safety layer for AI coding sessions. In the current codebas
 
 - `canary prompt` scans a prompt for secrets, PII, sensitive paths, and semantically similar confidential content before you hand it to an agent.
 - `canary on` / `canary off` toggle prompt screening for installed Claude guard shims.
-- `canary guard install` installs a guarded `claude` shim in `~/.canary/bin` and Claude hooks in `~/.claude/settings.json`.
+- `canary guard install` installs a guarded `claude` shim in `~/.canary/bin` and Claude hooks in `~/.claude/settings.json`, including in-session prompt screening.
 - `canary audit` listens for risky Bash / Write / Edit activity from the next Claude session.
 - `canary watch` waits for the next session, builds a file baseline, auto-creates a checkpoint, and monitors semantic drift and sensitive-file writes.
 - `canary checkpoint`, `canary checkpoints`, `canary rollback`, and `canary log` manage snapshots and session history.
@@ -14,6 +14,12 @@ Canary is a terminal safety layer for AI coding sessions. In the current codebas
 - `canary usage` shows daily soft usage limits for IBM online generation and embeddings.
 
 ## Install
+
+From PyPI:
+
+```bash
+pip install canary-tool
+```
 
 From this repo root:
 
@@ -29,6 +35,7 @@ pip install -e ".[dev]"
 ```
 
 `.[local]` adds the Hugging Face / `torch` stack used for local embeddings. The package metadata currently installs the `canary` CLI only.
+The PyPI package name is `canary-tool`, and the installed command is `canary`.
 
 ## Quick Start
 
@@ -104,12 +111,10 @@ canary docs [topic]
 - installs a `claude` shim in `~/.canary/bin`
 - adds Canary hook commands to `~/.claude/settings.json`
 
-With the shim installed and `PATH` updated, command-line Claude prompts are screened before launch. The shim also recognizes:
+With the shim installed and `PATH` updated, launch-time Claude prompts are screened before Claude starts. With the hooks installed, prompts submitted from inside Claude are also screened through the `UserPromptSubmit` hook. The shim also recognizes:
 
 - `-ignore` / `--ignore` to bypass screening for one call
 - `-safe` / `--safe` to force screening for one call even if `canary off` is active
-
-Current limitation: prompts typed after Claude is already open in an interactive TUI are not intercepted yet.
 
 ## Backends
 
@@ -202,7 +207,7 @@ canary docs usage
 
 - Direct guard installation is currently implemented for `claude` only.
 - The packaged CLI entrypoint is `canary`; wrapper functions like `claude_safe` are present in the codebase but are not installed as standalone scripts.
-- Interactive follow-up prompts typed inside an already-open Claude session are not screened.
+- In-session prompt screening relies on Claude hook support; equivalent guard installs for other agent TUIs are not implemented.
 - Local mode covers embeddings only; command auditing falls back to pattern rules instead of a local Granite chat model.
 
 ## Tests

@@ -4,6 +4,12 @@ This guide reflects the current codebase, not the earlier hackathon spec docs.
 
 ## Install
 
+From PyPI:
+
+```bash
+pip install canary-tool
+```
+
 From the repo root:
 
 ```bash
@@ -18,6 +24,7 @@ pip install -e ".[dev]"
 ```
 
 Only the `canary` CLI is installed by package metadata right now.
+The PyPI package name is `canary-tool`, and the installed command is `canary`.
 
 ## Core Workflow
 
@@ -79,13 +86,14 @@ canary mode online
 
 - a `claude` shim in `~/.canary/bin`
 - audit and watch hooks in `~/.claude/settings.json`
+- a prompt-screening hook for Claude `UserPromptSubmit` events
 
 The shim supports:
 
 - `-ignore` / `--ignore` to bypass screening once
 - `-safe` / `--safe` to force screening once
 
-Limitation: prompts typed after Claude is already open are not intercepted yet.
+With the shim and hooks installed, Canary screens both launch-time prompts and prompts submitted from inside Claude sessions.
 
 ## Command Surface
 

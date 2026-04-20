@@ -11,7 +11,8 @@ BRAND = "#ccff04"
 WARN = "yellow"
 ERROR = "red"
 MUTED = "grey58"
-SURFACE = "#2f3136"
+FRAME = "grey46"
+SURFACE = "#2b2d30"
 MARK = "◉"
 LOGO = """\
 [bold #ccff04]  ███████[/bold #ccff04]
@@ -39,7 +40,7 @@ def hero(*, subtitle: str, path: str | None = None, use_logo: bool = False) -> N
             meta_lines.append(f"[dim]{path}[/dim]")
         content = logo_block(indent=0) + "\n\n" + "\n".join(meta_lines)
         console.print()
-        console.print(Panel(content, border_style=BRAND, padding=(1, 3), expand=False))
+        console.print(Panel(content, border_style=FRAME, padding=(1, 3), expand=False))
         console.print()
         return
 
@@ -54,7 +55,7 @@ def hero(*, subtitle: str, path: str | None = None, use_logo: bool = False) -> N
     table.add_row(f"  [bold {BRAND}]{MARK}[/bold {BRAND}]", meta)
 
     console.print()
-    console.print(Panel(table, border_style=BRAND, padding=(1, 3), expand=False))
+    console.print(Panel(table, border_style=FRAME, padding=(1, 3), expand=False))
     console.print()
 
 
@@ -100,5 +101,5 @@ def note(text: str) -> None:
 
 
 def result_panel(content, *, padding: tuple = (1, 3)) -> None:
-    console.print(Panel(content, border_style=BRAND, padding=padding, expand=False))
+    console.print(Panel(content, border_style=FRAME, padding=padding, expand=False))
     console.print()

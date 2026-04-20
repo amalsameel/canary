@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Canary accelerated walkthrough.
 
-Shows canary and Claude Code working in tandem: every tool call Claude makes
-is intercepted by canary hooks in real time.
+Shows canary in a styled walkthrough with a simulated Claude Code session that
+emits real canary hook payloads and file edits.
 
 Usage:
   python demo2.py
@@ -41,7 +41,7 @@ def _bootstrap_python() -> None:
 _bootstrap_python()
 
 from dotenv import dotenv_values
-from rich.console import Console
+from canary.ui import BRAND, command_bar, console, divider, hero, note, ok, result_panel, warn
 
 
 AUTO = os.environ.get("AUTO", "0") == "1"
@@ -63,8 +63,6 @@ _RISK_COLORS = {
     "CRITICAL": "bold red",
 }
 
-console = Console()
-
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="canary accelerated walkthrough")
@@ -81,30 +79,6 @@ def pause(secs: float | None = None) -> None:
             input()
         except (EOFError, KeyboardInterrupt):
             raise SystemExit(0)
-
-
-def _print(text: str = "") -> None:
-    console.print(text)
-
-
-def _step(command: str) -> None:
-    _print(f"\n[bold]❯[/bold] [bold white]{command}[/bold white]")
-
-
-def _ok(msg: str) -> None:
-    _print(f"  [dim green]✓[/dim green]  [dim]{msg}[/dim]")
-
-
-def _info(msg: str) -> None:
-    _print(f"  [dim]·  {msg}[/dim]")
-
-
-def _warn(msg: str) -> None:
-    _print(f"  [yellow]![/yellow]  [dim]{msg}[/dim]")
-
-
-def _label(key: str, val: str) -> None:
-    _print(f"  [dim]{key:<10}[/dim]  {val}")
 
 
 def _run(
@@ -129,14 +103,14 @@ def _exec_step(
     input_text: str | None = None,
     show_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    _step(display)
+    command_bar(display)
     result = _run(argv, env=env, cwd=cwd, input_text=input_text)
     if show_output and result.stdout:
-        for line in result.stdout.rstrip().splitlines():
-            _print(f"  [dim]{line}[/dim]")
+        console.print(result.stdout.rstrip(), markup=False, highlight=False, soft_wrap=True)
+        console.print()
     if result.stderr and result.returncode != 0:
-        for line in result.stderr.rstrip().splitlines()[:6]:
-            _print(f"  [dim red]{line}[/dim red]")
+        console.print(result.stderr.rstrip(), style="red", markup=False, highlight=False, soft_wrap=True)
+        console.print()
     return result
 
 
@@ -257,12 +231,10 @@ def _audit_events_size(home_dir: Path) -> int:
 
 def _show_audit_events(events: list[dict]) -> None:
     if not events:
-        _info("no audit events captured")
+        note("no audit events captured")
         return
 
-    _print()
-    _print("  [dim]claude code tool calls intercepted by canary:[/dim]")
-    _print()
+    lines = ["[bold white]claude code tool calls intercepted by canary[/bold white]", ""]
 
     for ev in events:
         hook = ev.get("hook", "pre")
@@ -275,14 +247,16 @@ def _show_audit_events(events: list[dict]) -> None:
         if len(detail) > 60:
             detail = detail[:57] + "..."
 
-        row = f"  [dim]{direction}[/dim]  [bold]{tool}[/bold]"
+        row = f"[dim]{direction}[/dim]  [bold]{tool}[/bold]"
         if detail:
             row += f"  [dim]{detail}[/dim]"
         row += f"  [{color}]{risk}[/{color}]"
-        _print(row)
+        lines.append(row)
 
         if hook == "pre" and ev.get("repercussions") and risk not in ("SAFE",):
-            _print(f"     [dim]╰─ {ev['repercussions']}[/dim]")
+            lines.append(f"   [dim]╰─ {ev['repercussions']}[/dim]")
+
+    result_panel("\n".join(lines), padding=(1, 2))
 
 
 def _show_changed_files(project_dir: Path) -> None:
@@ -293,15 +267,13 @@ def _show_changed_files(project_dir: Path) -> None:
     )
     if not files:
         return
-    _print()
-    _print("  [dim]project files:[/dim]")
-    for f in files:
-        _print(f"  [dim]  {f}[/dim]")
+    lines = ["[bold white]project files after the session[/bold white]", ""]
+    lines.extend(f"[dim]{path}[/dim]" for path in files)
+    result_panel("\n".join(lines), padding=(1, 2))
 
 
 def _show_session_review(*, home_dir: Path, project_dir: Path, env: dict[str, str]) -> None:
-    _print()
-    _print("[dim]── session log ──────────────────────────────────────[/dim]")
+    divider("session log")
     result = _exec_step(
         [str(CANARY_BIN), "log", "."],
         display="canary log .",
@@ -312,8 +284,7 @@ def _show_session_review(*, home_dir: Path, project_dir: Path, env: dict[str, st
         raise RuntimeError("canary log failed")
     pause()
 
-    _print()
-    _print("[dim]── checkpoints ──────────────────────────────────────[/dim]")
+    divider("checkpoints")
     result = _exec_step(
         [str(CANARY_BIN), "checkpoints", "."],
         display="canary checkpoints .",
@@ -324,8 +295,7 @@ def _show_session_review(*, home_dir: Path, project_dir: Path, env: dict[str, st
         raise RuntimeError("canary checkpoints failed")
     pause()
 
-    _print()
-    _print("[dim]── rollback ─────────────────────────────────────────[/dim]")
+    divider("rollback")
     result = _exec_step(
         [str(CANARY_BIN), "rollback", "."],
         display="canary rollback .",
@@ -334,7 +304,7 @@ def _show_session_review(*, home_dir: Path, project_dir: Path, env: dict[str, st
     )
     if result.returncode != 0:
         raise RuntimeError("canary rollback failed")
-    _ok("workspace restored to pre-session state")
+    ok("workspace restored to pre-session state")
     pause()
 
 
@@ -348,17 +318,20 @@ def run(
     backend_label: str,
     prompt: str,
 ) -> None:
-    _print()
-    _print("[bold]canary + claude code[/bold]  [dim]accelerated walkthrough[/dim]")
-    _print()
-    _label("workspace", str(project_dir))
-    _label("backend", backend_label)
-    _print()
-    _info("press Enter to advance  ·  Ctrl-C to exit")
+    hero(subtitle="accelerated walkthrough", path=str(project_dir))
+    result_panel(
+        "\n".join((
+            "[dim]agent[/dim]      simulated claude code session",
+            f"[dim]backend[/dim]    [bold {BRAND}]{backend_label}[/bold {BRAND}]",
+            f"[dim]workspace[/dim]  [dim]{project_dir}[/dim]",
+            f"[dim]binary[/dim]     [dim]{claude_bin}[/dim]",
+            "",
+            "[dim]press Enter to advance  ·  Ctrl-C to exit[/dim]",
+        ))
+    )
     pause()
 
-    _print()
-    _print("[dim]── setup ─────────────────────────────────────────────[/dim]")
+    divider("setup")
 
     result = _exec_step(
         [str(CANARY_BIN), "guard", "install"],
@@ -367,7 +340,7 @@ def run(
     )
     if result.returncode != 0:
         raise RuntimeError("guard install failed")
-    _ok("canary hooks registered in Claude Code settings.json")
+    ok("canary hooks registered in Claude Code settings.json")
 
     result = _exec_step(
         [str(CANARY_BIN), "on"],
@@ -376,13 +349,11 @@ def run(
     )
     if result.returncode != 0:
         raise RuntimeError("canary on failed")
-    _ok("prompt screening enabled")
+    ok("prompt screening enabled")
     pause()
 
-    _print()
-    _print("[dim]── prompt firewall ──────────────────────────────────[/dim]")
-    _info("canary screens prompts before they reach claude code")
-    _print()
+    divider("prompt firewall")
+    note("canary screens prompts before they reach claude code")
 
     result = _exec_step(
         [str(CANARY_BIN), "prompt",
@@ -392,16 +363,14 @@ def run(
         show_output=True,
     )
     if result.returncode == 0:
-        _warn("expected non-zero exit — prompt should have been blocked")
+        warn("expected non-zero exit", "prompt should have been blocked")
     else:
-        _ok(f"blocked  [exit {result.returncode}]  secret pattern detected in prompt")
+        ok(f"blocked  [exit {result.returncode}]  secret pattern detected in prompt")
     pause()
 
-    _print()
-    _print("[dim]── monitors ──────────────────────────────────────────[/dim]")
-    _info("audit captures every tool call claude code makes via hooks")
-    _info("watch snapshots the repo continuously so you can roll back")
-    _print()
+    divider("monitors")
+    note("audit captures every tool call claude code makes via hooks")
+    note("watch snapshots the repo continuously so you can roll back")
 
     result = _exec_step(
         [str(CANARY_BIN), "audit"],
@@ -410,7 +379,7 @@ def run(
     )
     if result.returncode != 0:
         raise RuntimeError("canary audit failed")
-    _ok("audit listener started")
+    ok("audit listener started")
 
     result = _exec_step(
         [str(CANARY_BIN), "watch", ".", "--continuous"],
@@ -419,12 +388,11 @@ def run(
     )
     if result.returncode != 0:
         raise RuntimeError("canary watch failed")
-    _ok("file watcher started")
+    ok("file watcher started")
     pause()
 
-    _print()
-    _print("[dim]── claude code session ──────────────────────────────[/dim]")
-    _print()
+    divider("claude code session")
+    note("this walkthrough uses a simulated claude binary that emits real canary hook events")
 
     audit_start = _audit_events_size(home_dir)
 
@@ -460,7 +428,7 @@ def _prepare() -> tuple[Path, Path, Path, Path, dict[str, str], str]:
     _write_demo_project(project_dir, backend_env)
     agent_bin = _write_agent(bin_dir)
     env = _base_env(home_dir, backend_env, bin_dir)
-    return temp_root, home_dir, project_dir, agent_bin, env, "IBM watsonx"
+    return temp_root, home_dir, project_dir, agent_bin, env, _backend_label(backend_env)
 
 
 def main() -> None:
@@ -481,12 +449,11 @@ def main() -> None:
             prompt=args.prompt,
         )
 
-        _print()
-        _print("[dim]── done ──────────────────────────────────────────────[/dim]")
-        _info(f"temp workspace: {temp_root}")
+        divider("done")
+        note(f"temp workspace: {temp_root}")
         if keep:
-            _info("files left on disk for inspection")
-        _print()
+            note("files left on disk for inspection")
+        console.print()
 
     finally:
         _best_effort_stop(env, project_dir)

@@ -1130,6 +1130,55 @@ def audit_hook_cmd():
     sys.exit(0)
 
 
+@cli.command("prompt-hook", hidden=True)
+def prompt_hook_cmd():
+    """claude code userpromptsubmit hook: screens the user's prompt before it reaches claude."""
+    from .guard import get_enabled
+
+    if not get_enabled():
+        sys.exit(0)
+
+    try:
+        data = _json.loads(sys.stdin.read())
+        prompt = data.get("prompt", "")
+    except Exception:
+        sys.exit(0)
+
+    if not prompt:
+        sys.exit(0)
+
+    try:
+        findings = scan_prompt(prompt)
+        if not findings:
+            sys.exit(0)
+
+        score = compute_risk_score(findings)
+        descs = "; ".join(f.description for f in findings[:5])
+        level = "HIGH" if score > 60 else "MEDIUM"
+
+        _append_audit_event({
+            "tool": "UserPrompt", "risk": level,
+            "category": "prompt-screen", "via": "pattern",
+            "score": score, "found": descs,
+        })
+
+        if score >= 60:
+            reason = f"canary blocked prompt — {descs}"
+            print(_json.dumps({"decision": "block", "reason": reason}))
+            sys.exit(2)
+
+        # warn but allow through
+        print(
+            f"\n[canary] {level} risk prompt ({score}/100) — {descs}\n"
+            "  Use 'canary off' to disable screening.\n",
+            file=sys.stderr,
+        )
+    except Exception:
+        pass
+
+    sys.exit(0)
+
+
 @cli.command("watch-hook", hidden=True)
 def watch_hook_cmd():
     """claude code posttooluse hook: scans what the agent just did for exposure."""
@@ -1174,12 +1223,14 @@ def watch_hook_cmd():
 
 _CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
-# (event_type, tool_matcher, hook_command)
-_HOOK_SPECS: list[tuple[str, str, str]] = [
-    ("PreToolUse",  "Bash",  "canary audit-hook"),
-    ("PreToolUse",  "Write", "canary audit-hook"),
-    ("PreToolUse",  "Edit",  "canary audit-hook"),
-    ("PostToolUse", "Bash",  "canary watch-hook"),
+# (event_type, tool_matcher_or_None, hook_command)
+# matcher=None means the event has no tool matcher (e.g. UserPromptSubmit)
+_HOOK_SPECS: list[tuple[str, str | None, str]] = [
+    ("PreToolUse",       "Bash",  "canary audit-hook"),
+    ("PreToolUse",       "Write", "canary audit-hook"),
+    ("PreToolUse",       "Edit",  "canary audit-hook"),
+    ("PostToolUse",      "Bash",  "canary watch-hook"),
+    ("UserPromptSubmit", None,    "canary prompt-hook"),
 ]
 
 
@@ -1212,18 +1263,31 @@ def _install_hook(settings: dict) -> None:
     for event, matcher, command in _HOOK_SPECS:
         event_list = hooks.setdefault(event, [])
         entry = {"type": "command", "command": command}
-        for block in event_list:
-            if block.get("matcher") == matcher:
+        if matcher is None:
+            # No tool matcher (e.g. UserPromptSubmit)
+            if not event_list:
+                event_list.append({"hooks": [entry]})
+            else:
+                block = event_list[0]
                 if entry not in block.setdefault("hooks", []):
                     block["hooks"].append(entry)
-                break
         else:
-            event_list.append({"matcher": matcher, "hooks": [entry]})
+            for block in event_list:
+                if block.get("matcher") == matcher:
+                    if entry not in block.setdefault("hooks", []):
+                        block["hooks"].append(entry)
+                    break
+            else:
+                event_list.append({"matcher": matcher, "hooks": [entry]})
 
 
 def _remove_hook(settings: dict) -> None:
     hook_commands = {cmd for _, _, cmd in _HOOK_SPECS}
+    seen_events: set[str] = set()
     for event, _, _ in _HOOK_SPECS:
+        if event in seen_events:
+            continue
+        seen_events.add(event)
         event_list = settings.get("hooks", {}).get(event, [])
         for block in event_list:
             block["hooks"] = [

@@ -4,7 +4,7 @@ This document replaces the earlier hackathon-style PRD. It describes what the cu
 
 ## Product Statement
 
-Canary is a terminal safety layer for AI coding sessions. In its current form it is focused on Claude Code workflows: screening prompts before launch, auditing risky tool use during a session, watching the repository for risky changes, and keeping rollback checkpoints ready.
+Canary is a terminal safety layer for AI coding sessions. In its current form it is focused on Claude Code workflows: screening prompts before and during guarded sessions, auditing risky tool use during a session, watching the repository for risky changes, and keeping rollback checkpoints ready.
 
 ## Primary User
 
@@ -21,11 +21,13 @@ The current product is best suited for a developer who:
 
 - `canary prompt` scans prompt text before it is sent anywhere
 - scans combine regex checks, entropy checks, path checks, disclosure keywords, and embedding-based semantic matches
+- installed Claude guardrails can screen both launch-time prompts and in-session Claude prompt submissions
 - `--strict` blocks automatically on any finding
 
 ### Claude launch safety
 
 - `canary guard install` installs a guarded `claude` shim
+- `canary guard install` also installs Claude hook handlers in `~/.claude/settings.json`
 - `canary on` / `canary off` toggle prompt screening for that shim
 - one-shot overrides exist via `--ignore` and `--safe`
 
@@ -75,7 +77,6 @@ It does not currently provide a local chat model for bash auditing, so those che
 The current codebase does not ship:
 
 - direct Codex guard installation
-- screening of follow-up prompts typed inside an already-open Claude TUI
 - a web UI or dashboard
 - multi-agent orchestration
 - remote storage or central policy management
@@ -97,7 +98,6 @@ The current repo should let a user:
 
 The codebase is closest to expanding in these directions:
 
-- better integration for interactive Claude sessions
 - broader agent support beyond Claude
 - stronger local-only auditing
 - more polished packaging and installed entrypoints

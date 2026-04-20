@@ -2,7 +2,7 @@
 from rich.panel import Panel
 from rich.table import Table
 
-from .ui import BRAND, console
+from .ui import BRAND, FRAME, console
 
 SEVERITY_COLOR = {
     "CRITICAL": "bold red",
@@ -36,7 +36,7 @@ def bar_color(score: int) -> str:
 
 def render_risk_bar(score: int, label: str = "risk") -> None:
     console.print(Panel(_risk_bar_line(score, label=label),
-                        border_style=BRAND, padding=(1, 3), expand=False))
+                        border_style=FRAME, padding=(1, 3), expand=False))
     console.print()
 
 
@@ -66,12 +66,12 @@ def render_findings(findings: list, score: int) -> None:
                 f"[{color}]{icon}  {finding.severity.lower()}[/{color}]",
                 f"[dim]{finding.description.lower()}[/dim]",
             )
-        console.print(Panel(table, border_style=BRAND, padding=(1, 2), expand=False))
+        console.print(Panel(table, border_style=FRAME, padding=(1, 2), expand=False))
         console.print()
     else:
         console.print(Panel(f"[{BRAND}]●[/{BRAND}]  [dim]clear — no findings[/dim]",
-                            border_style=BRAND, padding=(1, 3), expand=False))
+                            border_style=FRAME, padding=(1, 3), expand=False))
         console.print()
 
-    console.print(Panel(_risk_bar_line(score), border_style=BRAND, padding=(1, 3), expand=False))
+    console.print(Panel(_risk_bar_line(score), border_style=FRAME, padding=(1, 3), expand=False))
     console.print()

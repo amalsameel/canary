@@ -19,3 +19,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Attribution Notice
+
+This project can optionally integrate with IBM watsonx.ai in online mode.
+IBM and watsonx.ai are referenced here for attribution and compatibility
+description only; their use does not imply endorsement by IBM.

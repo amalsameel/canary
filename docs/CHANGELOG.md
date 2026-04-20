@@ -904,3 +904,37 @@ This file is maintained by AI coding agents. Every session must:
 - `docs/MASTERPROMPT.md`
 - `canary/docs_topics.py`
 - `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-19 23:54] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- updated the markdown docs to match the current guarded-claude release flow:
+  - `README.md` now documents the PyPI package name `canary-tool` and the installed `canary` CLI
+  - `README.md`, `docs/README.md`, `docs/PRD.md`, and `docs/ARCH.md` now reflect hook-based in-session prompt screening through Claude `UserPromptSubmit`
+- refreshed `canary/docs_topics.py` so `canary docs` stays aligned with the updated guard/screening behavior
+- added an IBM watsonx.ai attribution notice to `LICENSE`
+- validated the release locally:
+  - `pytest -q` passes (`27 passed`)
+  - installed missing `wheel` into `.venv`
+  - built fresh release artifacts with `python -m build --sdist --wheel --no-isolation`
+  - `twine check` passes for both the wheel and sdist
+
+### Left incomplete / known issues
+- GitHub push and PyPI upload have not been executed from this session yet
+- `python -m build` with default isolated env bootstrap failed in the sandbox because it could not resolve package indexes; `--no-isolation` worked cleanly with the local virtualenv instead
+
+### Next session should start with
+- stage and commit the current release-ready tree
+- push `main` to GitHub
+- upload `/tmp/canary-release.LLAsH2/canary_tool-0.1.1.tar.gz` and `/tmp/canary-release.LLAsH2/canary_tool-0.1.1-py3-none-any.whl` with Twine once credentials are available
+
+### Files modified
+- `README.md`
+- `docs/README.md`
+- `docs/PRD.md`
+- `docs/ARCH.md`
+- `canary/docs_topics.py`
+- `LICENSE`
+- `docs/CHANGELOG.md`

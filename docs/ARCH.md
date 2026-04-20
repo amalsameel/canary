@@ -7,7 +7,7 @@ This file describes the current codebase. It is an architecture overview, not a 
 Canary currently has four main runtime paths:
 
 1. Direct prompt review with `canary prompt`.
-2. Claude Code prompt screening through an installed `claude` shim.
+2. Claude Code prompt screening through an installed `claude` shim and Claude hooks.
 3. Background audit of Claude tool activity.
 4. Background repository watching with checkpoints and rollback.
 
@@ -40,12 +40,13 @@ The shim launches `canary.guard_shim`, which:
 - screens the initial command-line prompt when screening is enabled
 - forwards the call to the real Claude binary
 
-Important current boundary: this protects command-line prompts passed at launch time. Prompts typed after Claude is already open are not intercepted.
+The installed hooks also screen in-session Claude prompts through `UserPromptSubmit`, so guarded sessions cover both launch-time prompts and prompts submitted after Claude is already open.
 
 ### 3. Audit Pipeline
 
 The audit path is Claude-hook driven:
 
+- `prompt-hook` runs on `UserPromptSubmit` to screen in-session prompts before they reach Claude
 - `audit-hook` runs before `Bash`, `Write`, and `Edit`
 - `watch-hook` runs after `Bash` to scan command output
 
@@ -185,5 +186,5 @@ Capabilities:
 
 - Direct guard installation is implemented for `claude` only.
 - The package exposes only the `canary` CLI entrypoint; helper wrapper functions are not installed as standalone scripts.
-- Interactive prompts typed inside an already-open Claude session are not screened.
+- In-session prompt screening depends on Claude's hook system; equivalent integrations for other agent TUIs are not implemented.
 - Local mode does not have a local chat model for command auditing.
