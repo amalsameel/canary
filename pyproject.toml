@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "canary-tool"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI agent watchdog: prompt firewall + filesystem drift detection via IBM Granite."
 readme = "README.md"
 license = "MIT"
@@ -52,7 +52,9 @@ Repository = "https://github.com/amalsameel/canary"
 Issues = "https://github.com/amalsameel/canary/issues"
 
 [tool.setuptools.packages.find]
-exclude = ["tests", "tests.*"]
+include = ["canary", "canary.*"]
+exclude = ["tests", "tests.*", "build", "build.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 "*" = [".canary.toml.example", ".env.example"]

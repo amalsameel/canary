@@ -938,3 +938,34 @@ This file is maintained by AI coding agents. Every session must:
 - `canary/docs_topics.py`
 - `LICENSE`
 - `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 00:14] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- bumped the published package from `0.1.1` to `0.1.2` in:
+  - `pyproject.toml`
+  - `canary/__init__.py`
+- fixed release packaging metadata so setuptools only includes the real application package:
+  - narrowed package discovery to `canary` / `canary.*`
+  - disabled namespace-package discovery for this repo
+- diagnosed and worked around a stale local `build/` directory that was causing duplicate `build/lib/...` paths to leak into the wheel during release builds
+- verified the final release artifacts:
+  - `pytest -q` passes (`27 passed`)
+  - `twine check` passes for both `canary_tool-0.1.2.tar.gz` and `canary_tool-0.1.2-py3-none-any.whl`
+  - inspected the rebuilt wheel contents to confirm only `canary/...` package paths were present
+- uploaded `canary-tool 0.1.2` to PyPI successfully
+
+### Left incomplete / known issues
+- the local `.env` stores the PyPI token as `PYPI_API_KEY = ...` with a space before `=`, which required custom parsing during upload; standard dotenv-style loading will be more reliable if it is changed to `PYPI_API_KEY=...`
+- the old generated `build/` directory was moved to `/tmp/canary-build-backup-012c` during release cleanup
+
+### Next session should start with
+- commit and push the `0.1.2` version bump if the repo should reflect the published release immediately
+- if desired, add an automated GitHub Actions publish workflow so future PyPI releases do not require manual Twine uploads
+
+### Files modified
+- `pyproject.toml`
+- `canary/__init__.py`
+- `docs/CHANGELOG.md`
