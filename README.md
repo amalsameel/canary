@@ -6,9 +6,9 @@ Canary is a terminal safety layer for AI coding sessions. In the current codebas
 
 - `canary prompt` scans a prompt for secrets, PII, sensitive paths, and semantically similar confidential content before you hand it to an agent.
 - `canary on` / `canary off` toggle prompt screening for installed Claude guard shims.
-- `canary guard install` installs a guarded `claude` shim in `~/.canary/bin` and Claude hooks in `~/.claude/settings.json`, including in-session prompt screening.
-- `canary audit` listens for risky Bash / Write / Edit activity from the next Claude session.
-- `canary watch` waits for the next session, builds a file baseline, auto-creates a checkpoint, and monitors semantic drift and sensitive-file writes.
+- `canary guard install` installs a guarded `claude` shim in `~/.canary/bin` and Claude hooks in `~/.claude/settings.json`, including in-session prompt screening and Bash permission-request coverage.
+- `canary audit` tails risky Bash / Write / Edit activity from the next Claude session, including pending Bash intents pulled from Claude transcript JSONL files.
+- `canary watch` opens a protected Claude launcher by default, then starts the watcher, builds a file baseline, auto-creates a checkpoint, and monitors semantic drift and sensitive-file writes.
 - `canary checkpoint`, `canary checkpoints`, `canary rollback`, and `canary log` manage snapshots and session history.
 - `canary mode` switches between online IBM watsonx.ai and local on-device Granite embeddings.
 - `canary usage` shows daily soft usage limits for IBM online generation and embeddings.
@@ -66,7 +66,7 @@ canary on
 canary off
 ```
 
-Start the background auditor and repo watcher:
+Start the transcript-aware auditor and protected watcher:
 
 ```bash
 canary audit
@@ -88,7 +88,7 @@ canary prompt "<text>" [--strict]
 canary on
 canary off
 canary audit [--idle 60] [--log] [--stop]
-canary watch [path] [--idle 30] [--continuous] [--log] [--stop]
+canary watch [path] [--idle 30] [--continuous] [--prompt TEXT] [--check-only] [--background] [--log] [--stop]
 canary checkpoint [path] [--name NAME] [--delete ID] [--delete-all]
 canary checkpoints [path]
 canary rollback [path] [checkpoint_id]
@@ -111,7 +111,7 @@ canary docs [topic]
 - installs a `claude` shim in `~/.canary/bin`
 - adds Canary hook commands to `~/.claude/settings.json`
 
-With the shim installed and `PATH` updated, launch-time Claude prompts are screened before Claude starts. With the hooks installed, prompts submitted from inside Claude are also screened through the `UserPromptSubmit` hook. The shim also recognizes:
+With the shim installed and `PATH` updated, launch-time Claude prompts are screened before Claude starts. With the hooks installed, prompts submitted from inside Claude are also screened through the `UserPromptSubmit` hook, and Bash permission prompts are visible to Canary through `PermissionRequest` plus transcript tailing. The shim also recognizes:
 
 - `-ignore` / `--ignore` to bypass screening for one call
 - `-safe` / `--safe` to force screening for one call even if `canary off` is active
@@ -143,12 +143,12 @@ Important behavior difference:
 Typical guarded workflow:
 
 1. Run `canary guard install` once and export `~/.canary/bin` at the front of `PATH`.
-2. Start `canary audit` to capture risky tool activity from the next Claude session.
-3. Start `canary watch .` to monitor the repo; it waits for the first hooked tool event, then indexes the workspace and creates a checkpoint.
-4. Launch `claude "..."` through the shim.
+2. Start `canary audit` to capture risky tool activity and pending Bash intents from the next Claude session.
+3. Run `canary watch .` to open the protected prompt panel; if the prompt is clear, Canary launches Claude and starts the watcher in the background.
+4. Use `canary watch . --background` if you want the old monitor-only behavior without launching Claude.
 5. Use `canary log`, `canary checkpoints`, and `canary rollback` if you need to inspect or restore the session.
 
-`canary watch --continuous` skips the "next session" wait and watches immediately until you stop it.
+`canary watch --continuous` keeps the watcher running until you stop it. `canary audit` now follows the same session via Claude's local transcript JSONL files under `~/.claude/projects/`.
 
 ## Config
 
@@ -186,6 +186,8 @@ Home-directory state lives under `~/.canary/`, including:
 - `watch.log`
 - `audit_events.jsonl`
 - `bin/claude`
+
+`canary audit` also reads Claude's local transcript files under `~/.claude/projects/*.jsonl` when they are available.
 
 ## Built-In Docs
 

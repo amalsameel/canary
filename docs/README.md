@@ -48,7 +48,7 @@ canary guard install
 export PATH="$HOME/.canary/bin:$PATH"
 ```
 
-Start the background helpers for the next session:
+Start the transcript-aware auditor and protected watcher:
 
 ```bash
 canary audit
@@ -86,14 +86,14 @@ canary mode online
 
 - a `claude` shim in `~/.canary/bin`
 - audit and watch hooks in `~/.claude/settings.json`
-- a prompt-screening hook for Claude `UserPromptSubmit` events
+- prompt-screening and Bash permission-request hooks for Claude sessions
 
 The shim supports:
 
 - `-ignore` / `--ignore` to bypass screening once
 - `-safe` / `--safe` to force screening once
 
-With the shim and hooks installed, Canary screens both launch-time prompts and prompts submitted from inside Claude sessions.
+With the shim and hooks installed, Canary screens both launch-time prompts and prompts submitted from inside Claude sessions, and `canary audit` can follow pending Bash commands before you approve them.
 
 ## Command Surface
 
@@ -102,7 +102,7 @@ canary prompt "<text>" [--strict]
 canary on
 canary off
 canary audit [--idle 60] [--log] [--stop]
-canary watch [path] [--idle 30] [--continuous] [--log] [--stop]
+canary watch [path] [--idle 30] [--continuous] [--prompt TEXT] [--check-only] [--background] [--log] [--stop]
 canary checkpoint [path] [--name NAME] [--delete ID] [--delete-all]
 canary checkpoints [path]
 canary rollback [path] [checkpoint_id]
@@ -146,6 +146,7 @@ Home directory:
 - `~/.canary/audit.log`
 - `~/.canary/watch.log`
 - `~/.canary/audit_events.jsonl`
+- `~/.claude/projects/*.jsonl` (read by `canary audit` for pending Bash intents)
 
 ## Config
 

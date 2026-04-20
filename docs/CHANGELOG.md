@@ -969,3 +969,97 @@ This file is maintained by AI coding agents. Every session must:
 - `pyproject.toml`
 - `canary/__init__.py`
 - `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 00:52] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- redesigned `canary watch` into a protected Claude launcher by default:
+  - opens a compact terminal panel for a protected prompt
+  - screens the prompt before any Claude handoff
+  - shows a short unicode pipeline animation when the prompt is clear
+  - starts the repository watcher in the background before launching Claude
+  - preserves the older monitor-only behavior behind `canary watch --background`
+- fixed the audit pipeline so pending Bash commands are visible before execution:
+  - added Claude `PermissionRequest` hook support to the installed hook set
+  - preserved `transcript_path`, `session_id`, and related metadata in Canary audit events
+  - added `canary/claude_transcript.py` to tail Claude session JSONL files in `~/.claude/projects/`
+  - updated `canary audit` to combine hook events with transcript-derived Bash intents and rejected permission results
+- updated the watcher sidecar path in `canary/wrappers.py` so helper wrappers start the real watcher process directly instead of recursing through the new interactive `watch` command
+- refreshed user-facing docs and built-in docs topics to match the new watch/audit behavior
+- refreshed the live Claude integration on this machine with `./.venv/bin/python -m canary.cli guard install`, then verified all expected hooks are present in `~/.claude/settings.json`
+- verified the change set locally:
+  - `./.venv/bin/python -m pytest -q` passes (`33 passed`)
+  - `./.venv/bin/python -m canary.cli watch --help` shows the new launcher/background options
+  - `./.venv/bin/python -m canary.cli watch . --prompt "fix the login bug" --check-only` renders the new protected-launch flow cleanly
+  - `./.venv/bin/python -m canary.cli hook status` shows `PreToolUse`, `PermissionRequest`, `PostToolUse`, and `UserPromptSubmit` Canary hooks all installed
+
+### Left incomplete / known issues
+- other machines with older Claude hook installs will still need `canary guard install` run again to add the new `PermissionRequest` hook and refresh any missing prompt hook entries
+- the current Claude interactive-mode docs list transcript viewing under `Ctrl+O`; the earlier `Ctrl+T` note referenced during planning appears stale
+
+### Next session should start with
+- if desired, add an end-to-end demo or smoke test that exercises transcript-backed Bash auditing with a real Claude session fixture
+
+### Files modified
+- `canary/cli.py`
+- `canary/ui.py`
+- `canary/wrappers.py`
+- `canary/claude_transcript.py`
+- `canary/docs_topics.py`
+- `tests/test_claude_transcript.py`
+- `tests/test_cli_hooks.py`
+- `README.md`
+- `docs/README.md`
+- `docs/ARCH.md`
+- `docs/PRD.md`
+- `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 01:09] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- tightened the new `canary watch` launcher so the prompt surface feels much closer to Claude Code's docked terminal panel:
+  - replaced the generic Rich panel with a bottom-docked dark panel centered around a `claude` header and muted terminal chrome
+  - pushed the prompt UI toward the bottom of the terminal with large empty space above, matching Claude's sparse conversation-first layout
+  - kept the watcher/audit status visible as compact pills instead of Canary-style stacked status cards
+- polished the watch handoff flow:
+  - the interactive prompt entry now renders inside the new docked panel flow
+  - the safe-prompt animation now reuses the same Claude-like panel styling
+  - `canary watch --prompt "...\" --check-only` now renders the same docked panel instead of falling back to a plain success line
+- verified the updated UI pass:
+  - `./.venv/bin/python -m canary.cli watch . --prompt "fix the login bug" --check-only` renders the new Claude-like panel
+  - `./.venv/bin/python -m pytest -q` still passes (`33 passed`)
+
+### Left incomplete / known issues
+- the panel is intentionally a close terminal approximation built with Rich, not a byte-for-byte clone of Claude's proprietary TUI implementation
+- multiline prompt composition inside the dock is still limited by the current terminal input approach; the interface is visually closer to Claude than the input engine is
+
+### Next session should start with
+- if desired, replace the current single-line input path with a fuller TUI input widget so multiline prompt editing matches the new panel styling more closely
+- if desired, add a dedicated screenshot or asciinema-style demo artifact showing the new watch panel in action
+
+### Files modified
+- `canary/ui.py`
+- `canary/cli.py`
+- `docs/CHANGELOG.md`
+
+---
+
+## [2026-04-20 02:14] Model: Claude Sonnet 4.6 | Status: COMPLETED
+
+### Completed this session
+- Replaced simple block-C logo in `protected_prompt_panel` with the full `LOGO` constant (C glyph + pixelated "canary" text in brand green) for richer unicode presence
+- Made `canary on` open the same Claude Code-style protected launch panel as `canary watch` (enable screening → interactive prompt → pipeline animation → Claude)
+- Fixed `canary audit` transcript discovery:
+  - Added `_discover_active_transcripts()` that scans `~/.claude/projects/**/*.jsonl` for files modified within the last 10 minutes
+  - Audit listener now seeds transcript tails on startup (4 KB lookback to catch in-flight pending commands)
+  - Periodic rescan every 5 s picks up new Claude sessions without needing a hook event to announce the path
+- All 33 tests pass
+
+### Files modified
+- `canary/ui.py`
+- `canary/cli.py`
+- `docs/CHANGELOG.md`

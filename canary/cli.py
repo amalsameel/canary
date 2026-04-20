@@ -27,6 +27,7 @@ from rich.table import Table
 load_dotenv()
 
 from . import __version__
+from .claude_transcript import iter_bash_tool_uses, iter_tool_results, read_jsonl_since, tool_result_state
 from .usage import get_usage, get_limits, near_limit
 from .checkpoint import delete_all_checkpoints, delete_checkpoint, list_checkpoints, rollback as do_rollback, take_snapshot
 from .device import detect_device_profile
@@ -37,7 +38,21 @@ from .prompt_firewall import scan_prompt
 from .risk import compute_risk_score, render_findings
 from .semantic_firewall import semantic_scan
 from .session import log_event, read_log
-from .ui import BRAND, command_bar, console, fail, fields, hero, note, ok, result_panel, warn
+from .ui import (
+    BRAND,
+    animate_pipeline,
+    command_bar,
+    console,
+    fail,
+    fields,
+    hero,
+    note,
+    ok,
+    protected_prompt_panel,
+    result_panel,
+    show_watch_panel,
+    warn,
+)
 from .watcher import start_watch
 
 EVENT_COLORS = {
@@ -125,7 +140,8 @@ def _print_home() -> None:
 
     state = "[bold #ccff04]on[/bold #ccff04]" if get_enabled() else "[dim]off[/dim]"
     rows = [
-        ("on · off", f"toggle prompt screening  ·  currently {state}"),
+        ("on", f"enable screening and open protected launch panel  ·  currently {state}"),
+        ("off", "disable prompt screening"),
         ("prompt", "review a prompt before handoff"),
         ("audit", "monitor the next agent session for risky tool calls"),
         ("watch", "watch a repo during an agent run"),
@@ -241,6 +257,23 @@ def _auto_setup_backend(prefer: str) -> str:
     return profile.recommended_mode
 
 
+def _review_prompt(text: str, *, target: str, render_clear: bool = True) -> tuple[list, int]:
+    findings = scan_prompt(text)
+    with console.status("[dim]reviewing...[/dim]", spinner="dots"):
+        findings += semantic_scan(text)
+
+    score = compute_risk_score(findings)
+    if findings or render_clear:
+        render_findings(findings, score)
+
+    log_event("prompt_scan", {
+        "score": score,
+        "finding_count": len(findings),
+        "severities": [f.severity for f in findings],
+    }, target=target)
+    return findings, score
+
+
 @cli.command("prompt")
 @click.argument("text")
 @click.option("--strict", is_flag=True, help="block automatically without prompting.")
@@ -251,18 +284,7 @@ def prompt_cmd(text, strict, agent, check_only):
     hero(subtitle="prompt firewall", path=os.getcwd())
     command_bar("prompt review")
 
-    findings = scan_prompt(text)
-    with console.status("[dim]reviewing...[/dim]", spinner="dots"):
-        findings += semantic_scan(text)
-
-    score = compute_risk_score(findings)
-    render_findings(findings, score)
-
-    log_event("prompt_scan", {
-        "score": score,
-        "finding_count": len(findings),
-        "severities": [f.severity for f in findings],
-    })
+    findings, score = _review_prompt(text, target=os.getcwd())
 
     if findings:
         if strict:
@@ -299,16 +321,9 @@ def prompt_cmd(text, strict, agent, check_only):
 
 @cli.command("on")
 def on_cmd():
-    """enable prompt screening for all claude code calls."""
-    hero(subtitle="prompt screening", path=os.getcwd())
-    command_bar("on")
+    """enable prompt screening and open the protected claude launch panel."""
     set_enabled(True)
-    result_panel(
-        f"[bold {BRAND}]◉[/bold {BRAND}]  screening [bold white]enabled[/bold white]\n"
-        f"[dim]{'─' * 34}[/dim]\n"
-        f"  [dim]╰─  all prompts checked before reaching the agent[/dim]\n"
-        f"  [dim]╰─  pass [white]-ignore[/white] to bypass for a single call[/dim]"
-    )
+    _launch_watch_session(".", idle=30, continuous=False, prompt=None, check_only=False)
 
 
 @cli.command("off")
@@ -341,17 +356,115 @@ def _watch_already_running() -> int | None:
         return None
 
 
+def _spawn_background_watch(target: str, *, idle: int, continuous: bool) -> subprocess.Popen:
+    canary_bin = sys.argv[0]
+    cmd = [canary_bin, "watch", os.path.abspath(target), "--idle", str(idle), "--_bg"]
+    if continuous:
+        cmd.append("--continuous")
+
+    _WATCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(_WATCH_LOG_PATH, "w") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+            close_fds=True,
+        )
+    _WATCH_PID_PATH.write_text(str(proc.pid))
+    return proc
+
+
+def _resolve_watch_agent() -> str | None:
+    real_binary = resolve_real_binary("claude", shim_dir=DEFAULT_SHIM_DIR)
+    if real_binary and os.access(real_binary, os.X_OK):
+        return real_binary
+    return shutil.which("claude")
+
+
+def _collect_watch_prompt(target: str, preset: str | None) -> str | None:
+    prompt_text = preset.strip() if preset else None
+    interactive = preset is None
+
+    while True:
+        if interactive:
+            prompt_prefix = protected_prompt_panel(target, watcher_running=_watch_already_running() is not None)
+            try:
+                prompt_text = console.input(prompt_prefix).strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print()
+                return None
+            console.print()
+
+        if not prompt_text:
+            fail("prompt required", "enter a Claude task or press Ctrl+C to cancel")
+            console.print()
+            if not interactive:
+                return None
+            prompt_text = None
+            continue
+
+        findings, _ = _review_prompt(prompt_text, target=target, render_clear=False)
+        if not findings:
+            return prompt_text
+
+        fail("blocked", "edit the prompt and try again")
+        console.print()
+        if not interactive:
+            return None
+        prompt_text = None
+
+
+def _launch_watch_session(target: str, *, idle: int, continuous: bool, prompt: str | None, check_only: bool) -> None:
+    target = os.path.abspath(target)
+    agent_path = _resolve_watch_agent()
+    if not agent_path and not check_only:
+        fail("claude not found", "install Claude Code or add it to your PATH")
+        console.print()
+        raise SystemExit(127)
+
+    prompt_text = _collect_watch_prompt(target, prompt)
+    if not prompt_text:
+        note("watch cancelled")
+        console.print()
+        raise SystemExit(1)
+
+    if check_only:
+        show_watch_panel(
+            target,
+            heading="Safe prompt accepted",
+            subheading="The prompt cleared Canary's screen and is ready to hand off into Claude.",
+            prompt=prompt_text,
+            footer="check-only mode  ·  no watcher or Claude process was started",
+            active_step="shield",
+        )
+        return
+
+    existing = _watch_already_running()
+    proc = None
+    if existing:
+        watcher_running = True
+    else:
+        proc = _spawn_background_watch(target, idle=idle, continuous=continuous)
+        watcher_running = False
+
+    animate_pipeline(prompt_text, agent="claude", target=target, watcher_running=watcher_running)
+    raise SystemExit(subprocess.run([agent_path, prompt_text], cwd=target).returncode)
+
+
 @cli.command("watch")
 @click.argument("target", default=".", type=click.Path(exists=True))
 @click.option("--idle", default=30, show_default=True,
               help="exit after this many seconds with no file activity.")
 @click.option("--continuous", is_flag=True, help="run indefinitely, overrides --idle.")
+@click.option("--prompt", default=None, help="screen and launch this prompt without opening the input panel.")
+@click.option("--check-only", is_flag=True, help="screen the prompt but do not launch Claude.")
+@click.option("--background", is_flag=True, help="start only the background watcher instead of the protected Claude launcher.")
 @click.option("--stop", is_flag=True, help="stop a running background watcher.")
 @click.option("--log", is_flag=True, help="tail the watch log from the last session.")
 @click.option("--_bg", is_flag=True, hidden=True)
-def watch_cmd(target, idle, continuous, stop, log, _bg):
-    """start a background watcher for the next agent session."""
-    import subprocess
+def watch_cmd(target, idle, continuous, prompt, check_only, background, stop, log, _bg):
+    """launch Claude through a protected prompt panel or run the background watcher."""
 
     if stop:
         pid = _watch_already_running()
@@ -382,36 +495,22 @@ def watch_cmd(target, idle, continuous, stop, log, _bg):
         _WATCH_PID_PATH.unlink(missing_ok=True)
         return
 
+    if not background:
+        _launch_watch_session(target, idle=idle, continuous=continuous, prompt=prompt, check_only=check_only)
+        return
+
     # Check if one is already running
     existing = _watch_already_running()
+    hero(subtitle="background watcher", path=os.path.abspath(target))
+    command_bar("watch")
     if existing:
-        hero(subtitle="background watcher", path=os.path.abspath(target))
-        command_bar("watch")
         note(f"watcher already running  ·  pid {existing}")
         note(f"canary watch --log  ·  follow output")
         note(f"canary watch --stop  ·  stop it")
         console.print()
         return
 
-    # Spawn background process
-    hero(subtitle="background watcher", path=os.path.abspath(target))
-    command_bar("watch")
-
-    canary_bin = sys.argv[0]
-    cmd = [canary_bin, "watch", os.path.abspath(target), "--idle", str(idle), "--_bg"]
-    if continuous:
-        cmd.append("--continuous")
-
-    _WATCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_WATCH_LOG_PATH, "w") as log_file:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_file,
-            stderr=log_file,
-            start_new_session=True,
-            close_fds=True,
-        )
-    _WATCH_PID_PATH.write_text(str(proc.pid))
+    proc = _spawn_background_watch(os.path.abspath(target), idle=idle, continuous=continuous)
 
     idle_detail = "runs indefinitely" if continuous else f"exits after {idle}s idle"
     result_panel(
@@ -661,7 +760,7 @@ def setup_cmd(prefer, guards):
                 record = install_guard(agent, watch=False, shim_dir=DEFAULT_SHIM_DIR)
                 ok(f"guard installed for {agent}", record.shim_path)
             settings = _load_claude_settings()
-            if not _hook_installed(settings):
+            if not _all_hooks_installed(settings):
                 _install_hook(settings)
                 _save_claude_settings(settings)
                 ok("bash audit hook installed", str(_CLAUDE_SETTINGS_PATH))
@@ -720,7 +819,7 @@ def guard_install_cmd(watch):
             warn(f"{agent} not installed", str(exc))
     if installed:
         settings = _load_claude_settings()
-        if not _hook_installed(settings):
+        if not _all_hooks_installed(settings):
             _install_hook(settings)
             _save_claude_settings(settings)
             ok("bash audit hook installed", str(_CLAUDE_SETTINGS_PATH))
@@ -894,10 +993,12 @@ def _render_audit_event(event: dict) -> None:
     hook = event.get("hook", "pre")
     hook_label = "output" if hook == "post" else "tool"
     via = event.get("via", "pattern")
+    stage = event.get("stage", "")
 
     console.print(
         f"  [dim]{ts}[/dim]  [{color}]{icon}  {risk}[/{color}]"
-        f"  [dim]{category}  ·  {tool} {hook_label}  ·  {via}[/dim]"
+        f"  [dim]{category}  ·  {tool} {hook_label}"
+        f"{f'  ·  {stage}' if stage else ''}  ·  {via}[/dim]"
     )
     for key in ("command", "file", "what", "repercussions", "found", "note"):
         val = event.get(key)
@@ -906,48 +1007,173 @@ def _render_audit_event(event: dict) -> None:
     console.print()
 
 
+def _track_transcript(tails: dict[str, dict], transcript_path: str | None) -> None:
+    if not transcript_path:
+        return
+    tails.setdefault(transcript_path, {"offset": 0, "remainder": ""})
+
+
+def _discover_active_transcripts(max_age_secs: int = 600) -> dict[str, int]:
+    """Scan ~/.claude/projects/ for recently modified session JSONL files.
+
+    Returns {path: current_file_size} for files modified within max_age_secs.
+    """
+    from .claude_transcript import CLAUDE_PROJECTS_DIR
+    now = time.time()
+    found: dict[str, int] = {}
+    if not CLAUDE_PROJECTS_DIR.exists():
+        return found
+    try:
+        for path in CLAUDE_PROJECTS_DIR.rglob("*.jsonl"):
+            try:
+                stat = path.stat()
+                if now - stat.st_mtime < max_age_secs:
+                    found[str(path)] = stat.st_size
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return found
+
+
+def _should_render_audit_event(event: dict) -> bool:
+    """Use transcript tailing for pending Bash intents when possible."""
+    if event.get("tool") == "Bash" and event.get("hook") in {"pre", "permission"} and event.get("transcript_path"):
+        return False
+    return True
+
+
 def _audit_listen(idle_timeout: int) -> None:
+    from .bash_auditor import audit_command
     from rich.rule import Rule
 
     hero(subtitle="background auditor", path=os.getcwd())
     command_bar("audit")
 
-    start_pos = _AUDIT_EVENTS_PATH.stat().st_size if _AUDIT_EVENTS_PATH.exists() else 0
-
     console.print(f"  [bold {BRAND}]◉[/bold {BRAND}]  listening for next claude code session")
-    console.print(f"  [dim]╰─  events appear as the agent runs  ·  exits after {idle_timeout}s idle[/dim]")
+    console.print(f"  [dim]╰─  tails Canary hook events plus Claude transcript intents  ·  exits after {idle_timeout}s idle[/dim]")
     console.print()
     console.print(Rule(style="dim"))
     console.print()
 
+    audit_offset = _AUDIT_EVENTS_PATH.stat().st_size if _AUDIT_EVENTS_PATH.exists() else 0
+    audit_remainder = ""
+    transcript_tails: dict[str, dict] = {}
+    transcript_commands: dict[str, dict] = {}
+    seen_intents: set[str] = set()
+    seen_rejections: set[str] = set()
     last_event_time = time.time()
     event_count = 0
+    last_scan_time = 0.0
+    _TRANSCRIPT_SCAN_INTERVAL = 5.0
+
+    # Seed from any already-active Claude sessions
+    for tpath, fsize in _discover_active_transcripts().items():
+        # Start 4 KB back so we catch in-flight pending commands
+        transcript_tails[tpath] = {"offset": max(0, fsize - 4096), "remainder": ""}
 
     try:
         while True:
             time.sleep(0.4)
-            if not _AUDIT_EVENTS_PATH.exists():
-                if (time.time() - last_event_time) >= idle_timeout:
-                    break
-                continue
-            current_size = _AUDIT_EVENTS_PATH.stat().st_size
-            if current_size <= start_pos:
-                if (time.time() - last_event_time) >= idle_timeout:
-                    break
-                continue
-            with open(_AUDIT_EVENTS_PATH, "r") as fh:
-                fh.seek(start_pos)
-                new_data = fh.read()
-            start_pos = current_size
-            for line in new_data.splitlines():
-                if not line.strip():
+            saw_activity = False
+            now = time.time()
+
+            # Periodically re-scan for new Claude sessions
+            if now - last_scan_time >= _TRANSCRIPT_SCAN_INTERVAL:
+                for tpath, fsize in _discover_active_transcripts().items():
+                    if tpath not in transcript_tails:
+                        transcript_tails[tpath] = {"offset": fsize, "remainder": ""}
+                last_scan_time = now
+
+            audit_offset, audit_remainder, audit_entries = read_jsonl_since(
+                _AUDIT_EVENTS_PATH, audit_offset, audit_remainder
+            )
+            for event in audit_entries:
+                if not isinstance(event, dict):
                     continue
-                try:
-                    _render_audit_event(_json.loads(line))
-                    last_event_time = time.time()
+                _track_transcript(transcript_tails, event.get("transcript_path"))
+                if _should_render_audit_event(event):
+                    _render_audit_event(event)
+                    saw_activity = True
                     event_count += 1
-                except Exception:
-                    pass
+
+            for transcript_path, tail in list(transcript_tails.items()):
+                offset, remainder, entries = read_jsonl_since(
+                    transcript_path,
+                    tail["offset"],
+                    tail["remainder"],
+                )
+                tail["offset"] = offset
+                tail["remainder"] = remainder
+
+                for entry in entries:
+                    for intent in iter_bash_tool_uses(entry):
+                        tool_use_id = intent.get("tool_use_id") or (
+                            f"{transcript_path}:{intent.get('timestamp')}:{intent['command']}"
+                        )
+                        if tool_use_id in seen_intents:
+                            transcript_commands.setdefault(tool_use_id, intent)
+                            continue
+
+                        result = audit_command(intent["command"])
+                        via = "granite" if result.via_llm else "pattern"
+                        enriched = {
+                            **intent,
+                            "risk": result.risk,
+                            "category": result.category,
+                            "via": via,
+                            "what": result.what,
+                            "repercussions": result.repercussions,
+                        }
+                        transcript_commands[tool_use_id] = enriched
+                        seen_intents.add(tool_use_id)
+                        _render_audit_event({
+                            "timestamp": intent.get("timestamp") or time.time(),
+                            "tool": "Bash",
+                            "risk": result.risk,
+                            "category": result.category,
+                            "via": via,
+                            "command": intent["command"][:120],
+                            "what": result.what,
+                            "repercussions": result.repercussions,
+                            "hook": "permission",
+                            "stage": "pending approval",
+                        })
+                        saw_activity = True
+                        event_count += 1
+
+                    for result in iter_tool_results(entry):
+                        tool_use_id = result.get("tool_use_id", "")
+                        if not tool_use_id or tool_use_id in seen_rejections:
+                            continue
+
+                        prior = transcript_commands.get(tool_use_id)
+                        if prior is None:
+                            continue
+
+                        if tool_result_state(result.get("content", "")) != "rejected":
+                            continue
+
+                        seen_rejections.add(tool_use_id)
+                        _render_audit_event({
+                            "timestamp": result.get("timestamp") or time.time(),
+                            "tool": "Bash",
+                            "risk": prior.get("risk", "HIGH"),
+                            "category": "permission",
+                            "via": "transcript",
+                            "command": prior.get("command", "")[:120],
+                            "note": "user rejected the pending Bash command in Claude",
+                            "hook": "permission",
+                            "stage": "rejected",
+                        })
+                        saw_activity = True
+                        event_count += 1
+
+            if saw_activity:
+                last_event_time = time.time()
+
+            if (time.time() - last_event_time) >= idle_timeout:
+                break
     except KeyboardInterrupt:
         pass
 
@@ -1061,7 +1287,7 @@ def _hook_stderr_line(tag: str, level: str, category: str, via: str, fields: lis
 
 @cli.command("audit-hook", hidden=True)
 def audit_hook_cmd():
-    """claude code pretooluse hook: analyses the pending tool use before it runs."""
+    """Claude Code hook: analyze pending tool use and permission requests."""
     from .bash_auditor import audit_command
     from .prompt_firewall import scan_prompt
     from .risk import compute_risk_score
@@ -1069,10 +1295,18 @@ def audit_hook_cmd():
 
     try:
         data = _json.loads(sys.stdin.read())
+        hook_event_name = data.get("hook_event_name", "PreToolUse")
         tool_name = data.get("tool_name", "")
         inp = data.get("tool_input", {})
     except Exception:
         sys.exit(0)
+
+    meta = {
+        "hook_event_name": hook_event_name,
+        "session_id": data.get("session_id", ""),
+        "transcript_path": data.get("transcript_path", ""),
+        "cwd": data.get("cwd", ""),
+    }
 
     try:
         if tool_name == "Bash":
@@ -1081,6 +1315,7 @@ def audit_hook_cmd():
                 sys.exit(0)
             result = audit_command(command)
             via = "granite" if result.via_llm else "pattern"
+            hook = "permission" if hook_event_name == "PermissionRequest" else "pre"
             _hook_stderr_line(
                 "canary audit", result.risk, result.category,
                 via,
@@ -1089,8 +1324,10 @@ def audit_hook_cmd():
             _append_audit_event({
                 "tool": "Bash", "risk": result.risk,
                 "category": result.category, "via": via,
+                "hook": hook,
                 "command": command[:120],
                 "what": result.what, "repercussions": result.repercussions,
+                **meta,
             })
 
         elif tool_name in ("Write", "Edit"):
@@ -1106,6 +1343,8 @@ def audit_hook_cmd():
                     "tool": tool_name, "risk": "HIGH",
                     "category": "sensitive-write", "via": "pattern",
                     "file": file_path, "note": "writing to a sensitive file path",
+                    "hook": "pre",
+                    **meta,
                 })
                 sys.exit(0)
 
@@ -1123,6 +1362,8 @@ def audit_hook_cmd():
                         "tool": tool_name, "risk": level,
                         "category": "content-scan", "via": "pattern",
                         "file": file_path, "found": descs,
+                        "hook": "pre",
+                        **meta,
                     })
     except Exception:
         pass
@@ -1144,6 +1385,13 @@ def prompt_hook_cmd():
     except Exception:
         sys.exit(0)
 
+    meta = {
+        "hook_event_name": data.get("hook_event_name", "UserPromptSubmit"),
+        "session_id": data.get("session_id", ""),
+        "transcript_path": data.get("transcript_path", ""),
+        "cwd": data.get("cwd", ""),
+    }
+
     if not prompt:
         sys.exit(0)
 
@@ -1160,6 +1408,7 @@ def prompt_hook_cmd():
             "tool": "UserPrompt", "risk": level,
             "category": "prompt-screen", "via": "pattern",
             "score": score, "found": descs,
+            **meta,
         })
 
         if score >= 60:
@@ -1193,6 +1442,13 @@ def watch_hook_cmd():
     except Exception:
         sys.exit(0)
 
+    meta = {
+        "hook_event_name": data.get("hook_event_name", "PostToolUse"),
+        "session_id": data.get("session_id", ""),
+        "transcript_path": data.get("transcript_path", ""),
+        "cwd": data.get("cwd", ""),
+    }
+
     try:
         if tool_name == "Bash":
             output = str(resp.get("output", "")).strip()
@@ -1214,6 +1470,7 @@ def watch_hook_cmd():
                     "risk": level, "category": "output-scan", "via": "pattern",
                     "command": command, "found": descs,
                     "note": "sensitive data appeared in command output",
+                    **meta,
                 })
     except Exception:
         pass
@@ -1227,6 +1484,7 @@ _CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 # matcher=None means the event has no tool matcher (e.g. UserPromptSubmit)
 _HOOK_SPECS: list[tuple[str, str | None, str]] = [
     ("PreToolUse",       "Bash",  "canary audit-hook"),
+    ("PermissionRequest","Bash",  "canary audit-hook"),
     ("PreToolUse",       "Write", "canary audit-hook"),
     ("PreToolUse",       "Edit",  "canary audit-hook"),
     ("PostToolUse",      "Bash",  "canary watch-hook"),
@@ -1248,14 +1506,24 @@ def _save_claude_settings(settings: dict) -> None:
     _CLAUDE_SETTINGS_PATH.write_text(_json.dumps(settings, indent=2) + "\n")
 
 
+def _has_hook_entry(settings: dict, event: str, matcher: str | None, command: str) -> bool:
+    event_list = settings.get("hooks", {}).get(event, [])
+    entry = {"type": "command", "command": command}
+    return any(
+        entry in block.get("hooks", [])
+        for block in event_list
+        if block.get("matcher") == matcher
+    )
+
+
 def _hook_installed(settings: dict) -> bool:
-    """True if at least the primary audit-hook entry is present."""
-    for block in settings.get("hooks", {}).get("PreToolUse", []):
-        if block.get("matcher") == "Bash":
-            for h in block.get("hooks", []):
-                if h.get("command") == "canary audit-hook":
-                    return True
-    return False
+    """True if any Canary hook entry is present."""
+    return any(_has_hook_entry(settings, event, matcher, command) for event, matcher, command in _HOOK_SPECS)
+
+
+def _all_hooks_installed(settings: dict) -> bool:
+    """True if the full current Canary hook set is present."""
+    return all(_has_hook_entry(settings, event, matcher, command) for event, matcher, command in _HOOK_SPECS)
 
 
 def _install_hook(settings: dict) -> None:
@@ -1339,7 +1607,8 @@ def hook_status_cmd():
             if block.get("matcher") == matcher
         )
         mark = f"[{BRAND}]✓[/{BRAND}]" if active else "[dim]✗[/dim]"
-        lines.append(f"  {mark}  [dim]{event:<14}  {matcher:<8}  {command}[/dim]")
+        matcher_label = matcher or "-"
+        lines.append(f"  {mark}  [dim]{event:<17}  {matcher_label:<8}  {command}[/dim]")
         if active:
             any_installed = True
 

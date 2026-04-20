@@ -87,7 +87,7 @@ def _start_watch_sidecar(watch_dir: str, label: str) -> WatchSidecar:
     log_path = os.path.join(canary_dir, f"{label}-watch.log")
     stream = open(log_path, "a")
     process = subprocess.Popen(
-        [sys.executable, "-m", "canary.cli", "watch", watch_dir],
+        [sys.executable, "-m", "canary.cli", "watch", watch_dir, "--_bg"],
         stdin=subprocess.DEVNULL,
         stdout=stream,
         stderr=subprocess.STDOUT,

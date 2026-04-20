@@ -35,11 +35,13 @@ The current product is best suited for a developer who:
 
 - `canary audit` listens for the next Claude session and renders risky tool activity
 - pre-tool auditing covers `Bash`, `Write`, and `Edit`
+- pending Bash approvals are read from Claude hook metadata and local transcript JSONL files
 - post-tool output scanning covers `Bash` output for sensitive data exposure
 
 ### Repository watch and recovery
 
-- `canary watch` monitors a target directory during the next session or continuously
+- `canary watch` opens a protected Claude launch panel by default and starts the watcher automatically after a clear prompt
+- `canary watch --background` keeps the older monitor-only behavior
 - it auto-indexes the workspace, creates a checkpoint, and tracks semantic drift
 - sensitive filenames trigger an explicit warning path and are never embedded
 - `checkpoint`, `checkpoints`, `rollback`, and `log` provide recovery and inspection

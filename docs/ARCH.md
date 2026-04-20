@@ -8,8 +8,8 @@ Canary currently has four main runtime paths:
 
 1. Direct prompt review with `canary prompt`.
 2. Claude Code prompt screening through an installed `claude` shim and Claude hooks.
-3. Background audit of Claude tool activity.
-4. Background repository watching with checkpoints and rollback.
+3. Background audit of Claude tool activity and pending Bash intents.
+4. Protected Claude launch plus background repository watching with checkpoints and rollback.
 
 The product is centered on terminal workflows and local state. There is no web service or dashboard in the current codebase.
 
@@ -47,15 +47,17 @@ The installed hooks also screen in-session Claude prompts through `UserPromptSub
 The audit path is Claude-hook driven:
 
 - `prompt-hook` runs on `UserPromptSubmit` to screen in-session prompts before they reach Claude
-- `audit-hook` runs before `Bash`, `Write`, and `Edit`
+- `audit-hook` runs before `Bash`, `Write`, and `Edit`, and again on `PermissionRequest` for pending Bash approvals
 - `watch-hook` runs after `Bash` to scan command output
 
 These hooks append compact JSON lines to `~/.canary/audit_events.jsonl`.
 
-`canary audit` is a background listener that tails those events and renders them in a readable terminal view. The relevant modules are:
+`canary audit` is a background listener that tails those events and also follows Claude transcript JSONL files under `~/.claude/projects/`. That lets it render pending Bash commands before execution, which is the same phase Claude exposes in its transcript viewer and permission UI. The relevant modules are:
 
 - `canary/bash_auditor.py`
   audits bash commands
+- `canary/claude_transcript.py`
+  tails Claude transcript JSONL files and extracts pending Bash tool uses
 - `canary/prompt_firewall.py`
   scans pending write/edit content and bash output for sensitive material
 - `canary/cli.py`
@@ -68,9 +70,17 @@ Mode-specific behavior:
 
 ### 4. Watch Pipeline
 
-`canary watch` starts a background watcher process. The underlying runtime lives in `canary/watcher.py`.
+`canary watch` is now a protected launcher by default. It opens a prompt panel, screens the prompt locally, and only launches Claude when the prompt is clear. The underlying watcher runtime still lives in `canary/watcher.py`.
 
-By default the watcher:
+By default the launch path:
+
+- shows a small terminal panel for the protected prompt
+- runs the prompt and semantic scanners before any Claude handoff
+- shows a short unicode pipeline animation for the safe handoff
+- starts the repository watcher in the background
+- launches the real Claude binary directly so prompts are not double-screened
+
+By default the watcher itself:
 
 - waits for the next Claude hook event before activating
 - indexes the target directory
@@ -78,7 +88,7 @@ By default the watcher:
 - creates a checkpoint automatically
 - monitors file changes until the idle timeout expires
 
-In `--continuous` mode it skips the session wait and watches immediately until stopped.
+In `--background` mode, `canary watch` skips the launcher UI and behaves like the earlier monitor-only command. In `--continuous` mode the watcher skips the session wait and watches immediately until stopped.
 
 The watcher behavior includes:
 
@@ -152,6 +162,7 @@ Capabilities:
 - `~/.canary/watch.log`
 - `~/.canary/audit_events.jsonl`
 - `~/.canary/usage.json`
+- `~/.claude/projects/*.jsonl`
 
 ## Module Map
 
@@ -175,6 +186,8 @@ Capabilities:
   runtime shim entrypoint for guarded Claude launches
 - `canary/bash_auditor.py`
   bash command risk analysis
+- `canary/claude_transcript.py`
+  Claude transcript tailing and Bash-intent extraction
 - `canary/local_embeddings.py`
   local model loading and embedding generation
 - `canary/ibm/*`
