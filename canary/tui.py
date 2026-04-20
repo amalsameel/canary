@@ -20,6 +20,49 @@ LOGO = """\
 [bold #8DF95F]  ███████[/bold #8DF95F]"""
 
 
+class PromptArea:
+    """Shaded prompt input area with horizontal rules."""
+
+    def __init__(self, prompt: str = "", cursor: str = "▌") -> None:
+        self.prompt = prompt
+        self.cursor = cursor
+        self._frame = 0
+
+    def set_prompt(self, prompt: str) -> None:
+        self.prompt = prompt
+
+    def render(self) -> RenderableType:
+        # Horizontal rule
+        width = min(80, max(40, 60))
+        rule = "─" * width
+
+        # Input line with cursor
+        display = self.prompt + self.cursor if self.cursor else self.prompt
+        input_line = Text.from_markup(f"[bold {WHITE}]>[/bold {WHITE}]  {display}")
+
+        content = Group(
+            Text(rule, style=f"dim {FRAME}"),
+            Text(""),
+            input_line,
+            Text(""),
+            Text(rule, style=f"dim {FRAME}"),
+        )
+
+        return Panel(
+            content,
+            border_style=FRAME,
+            style=f"{WHITE} on {SURFACE_ALT}",  # Lighter shading
+            box=box.ROUNDED,
+            padding=(0, 2),
+        )
+
+    def tick(self) -> None:
+        """Animation frame tick."""
+        self._frame += 1
+        cursors = ["▌", "▐", "▖", "▗", "▘", "▙", "▚", "▛", "▜", "▝", "▞", "▟"]
+        self.cursor = cursors[self._frame % len(cursors)]
+
+
 class HeaderPanel:
     """Persistent header with logo, version, and cwd."""
 
