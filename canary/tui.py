@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
@@ -90,4 +93,76 @@ class HeaderPanel:
             style=f"{WHITE} on {SURFACE}",
             box=box.HEAVY_EDGE,
             padding=(1, 2),
+        )
+
+
+@dataclass
+class SubprocessItem:
+    """Single subprocess entry."""
+    name: str
+    status: Literal["running", "complete", "failed", "pending"] = "pending"
+    detail: str = ""
+
+    @property
+    def icon(self) -> str:
+        icons = {
+            "running": "▶",
+            "complete": "✓",
+            "failed": "✗",
+            "pending": "○",
+        }
+        return icons.get(self.status, "○")
+
+
+class SubprocessTree:
+    """Tree display of subprocesses with Unicode branch characters."""
+
+    def __init__(self, items: list[SubprocessItem] | None = None) -> None:
+        self.items = items or []
+
+    def add_item(self, item: SubprocessItem) -> None:
+        self.items.append(item)
+
+    def update_status(self, name: str, status: SubprocessItem.status) -> None:
+        for item in self.items:
+            if item.name == name:
+                item.status = status
+                break
+
+    def render(self) -> RenderableType:
+        if not self.items:
+            return Text("")  # Empty if no items
+
+        lines: list[RenderableType] = []
+        for i, item in enumerate(self.items):
+            is_last = i == len(self.items) - 1
+            branch = "└──" if is_last else "├──"
+            style = {
+                "running": f"bold {BRAND}",
+                "complete": f"bold {BRAND}",
+                "failed": "bold white",
+                "pending": MUTED,
+            }.get(item.status, MUTED)
+
+            line = Text.from_markup(
+                f"[dim {MUTED}]{branch}[/dim {MUTED}]  "
+                f"[{style}]{item.icon}[/{style}]  "
+                f"{item.name}"
+            )
+            if item.detail:
+                line.append_text(Text.from_markup(f"  [dim {MUTED}]{item.detail}[/dim {MUTED}]"))
+            lines.append(line)
+
+            # Add vertical connector if not last
+            if not is_last:
+                lines.append(Text.from_markup(f"[dim {MUTED}]│[/dim {MUTED}]"))
+
+        return Panel(
+            Group(*lines),
+            border_style=FRAME,
+            style=f"{WHITE} on {SURFACE}",
+            box=box.ROUNDED,
+            padding=(1, 2),
+            title="activity",
+            title_align="left",
         )

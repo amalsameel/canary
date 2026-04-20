@@ -31,3 +31,24 @@ def test_prompt_area_renders_with_rules():
 
     assert ">" in text
     assert "test prompt" in text
+
+
+def test_subprocess_tree_renders_unicode_branches():
+    from canary.tui import SubprocessTree, SubprocessItem
+    from rich.console import Console
+    import io
+
+    items = [
+        SubprocessItem(name="scan", status="complete"),
+        SubprocessItem(name="analyze", status="running"),
+    ]
+    tree = SubprocessTree(items=items)
+    renderable = tree.render()
+
+    # Capture the rendered output
+    console = Console(file=io.StringIO(), force_terminal=True, width=120)
+    console.print(renderable)
+    text = console.file.getvalue()
+
+    assert "scan" in text
+    assert "analyze" in text
