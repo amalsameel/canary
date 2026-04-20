@@ -8,13 +8,14 @@ from .tui import HeaderPanel, PromptArea, SubprocessTree, SubprocessItem, Thinki
 from .local_embeddings import get_local_embedding
 from .prompt_firewall import scan_prompt
 from .risk import compute_risk_score
+from .config import get_screening_enabled, set_screening_enabled
 
 
 class CanaryApp:
     """Main canary application with TUI."""
 
     def __init__(self) -> None:
-        self.screening_enabled = True
+        self.screening_enabled = get_screening_enabled()
         self.current_prompt = ""
         self.subprocesses = SubprocessTree()
         self.thinking = ThinkingIndicator()
@@ -25,6 +26,7 @@ class CanaryApp:
     def toggle_screening(self) -> None:
         """Toggle screening on/off."""
         self.screening_enabled = not self.screening_enabled
+        set_screening_enabled(self.screening_enabled)
 
     def set_prompt(self, prompt: str) -> None:
         """Update current prompt."""
