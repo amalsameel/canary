@@ -166,3 +166,54 @@ class SubprocessTree:
             title="activity",
             title_align="left",
         )
+
+
+class ThinkingIndicator:
+    """Animated thinking indicator with ●/○ pulse and pipeline state."""
+
+    def __init__(self, is_thinking: bool = False) -> None:
+        self.is_thinking = is_thinking
+        self._frame = 0
+        self.pipeline_state: Literal["thinking", "complete"] = "thinking"
+
+    def start_thinking(self) -> None:
+        self.is_thinking = True
+        self.pipeline_state = "thinking"
+        self._frame = 0
+
+    def stop_thinking(self) -> None:
+        self.is_thinking = False
+        self.pipeline_state = "complete"
+
+    def tick(self) -> None:
+        """Animation frame tick."""
+        if self.is_thinking:
+            self._frame += 1
+
+    def render(self) -> RenderableType:
+        if not self.is_thinking and self.pipeline_state == "complete":
+            return Text("")  # Hidden when idle
+
+        # Pulse between ● and ○
+        glyphs = ["●", "○"]
+        glyph = glyphs[self._frame % 2] if self.is_thinking else "●"
+        glyph_style = f"bold {BRAND}" if self.is_thinking else MUTED
+
+        # Pipeline: thinking → complete
+        thinking_style = f"bold {BRAND}" if self.pipeline_state == "thinking" else MUTED
+        complete_style = f"bold {BRAND}" if self.pipeline_state == "complete" else MUTED
+
+        content = Text()
+        content.append(glyph, style=glyph_style)
+        content.append("  ")
+        content.append("thinking", style=thinking_style)
+        content.append("  ━━  ", style=f"dim {FRAME}")
+        content.append("complete", style=complete_style)
+
+        return Panel(
+            content,
+            border_style=FRAME,
+            style=f"{WHITE} on {SURFACE}",
+            box=box.ROUNDED,
+            padding=(0, 2),
+        )

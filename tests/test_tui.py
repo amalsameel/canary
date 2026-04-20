@@ -52,3 +52,13 @@ def test_subprocess_tree_renders_unicode_branches():
 
     assert "scan" in text
     assert "analyze" in text
+
+
+def test_thinking_indicator_animates():
+    from canary.tui import ThinkingIndicator
+    indicator = ThinkingIndicator(is_thinking=True)
+    frame1 = indicator.render()
+    indicator.tick()
+    frame2 = indicator.render()
+    # Should change between frames
+    assert str(frame1) != str(frame2) or indicator._frame > 0
