@@ -1039,7 +1039,8 @@ def _read_prompt_line(prefix_symbol: str = "❯") -> str:
 
     try:
         tty.setraw(fd)
-        sys.stdout.write("\x1b[?25l")
+        # Keep cursor visible for better UX
+        sys.stdout.write("\x1b[?25h")
         # Reserve max space initially
         max_rows = 3 + _EDITOR_SUGGESTION_ROWS
         sys.stdout.write("\n" * (max_rows - 1))
@@ -1067,13 +1068,42 @@ def _read_prompt_line(prefix_symbol: str = "❯") -> str:
                     _draw_editor()
                 continue
             if char == "\x1b":
+                # Handle escape sequences including bracketed paste
                 next_char = sys.stdin.read(1)
                 if next_char == "[":
-                    sys.stdin.read(1)
+                    seq_char = sys.stdin.read(1)
+                    # Check for bracketed paste: \x1b[200~ (start) and \x1b[201~ (end)
+                    if seq_char == "2":
+                        paste_code = sys.stdin.read(2)  # read "00" or "01"
+                        if paste_code == "00":
+                            # Bracketed paste start - read until end sequence
+                            pasted = []
+                            while True:
+                                pc = sys.stdin.read(1)
+                                if pc == "\x1b":
+                                    # Check for end sequence
+                                    end_check = sys.stdin.read(3)
+                                    if end_check == "[201":
+                                        end_tilde = sys.stdin.read(1)
+                                        if end_tilde == "~":
+                                            break
+                                        else:
+                                            pasted.extend([pc, end_check, end_tilde])
+                                    else:
+                                        pasted.extend([pc, end_check])
+                                elif pc:
+                                    pasted.append(pc)
+                            buffer.extend(pasted)
+                            _draw_editor()
+                        elif paste_code == "01":
+                            # End sequence without start - ignore
+                            sys.stdin.read(1)  # consume "~"
+                        continue
+                    # Other CSI sequences - ignore
                 continue
-            if char.isprintable():
+            if char.isprintable() or char in ("\t",):
                 buffer.append(char)
-            _draw_editor()
+                _draw_editor()
     finally:
         sys.stdout.write("\x1b[?25h")
         sys.stdout.flush()
@@ -1114,7 +1144,8 @@ def _read_pinned_prompt_line(
 
     try:
         tty.setraw(fd)
-        sys.stdout.write("\x1b[?25l")
+        # Keep cursor visible for better UX
+        sys.stdout.write("\x1b[?25h")
         _draw_shell()
         sys.stdout.flush()
 
@@ -1140,11 +1171,40 @@ def _read_pinned_prompt_line(
                     _draw_shell()
                 continue
             if char == "\x1b":
+                # Handle escape sequences including bracketed paste
                 next_char = sys.stdin.read(1)
                 if next_char == "[":
-                    sys.stdin.read(1)
+                    seq_char = sys.stdin.read(1)
+                    # Check for bracketed paste: \x1b[200~ (start) and \x1b[201~ (end)
+                    if seq_char == "2":
+                        paste_code = sys.stdin.read(2)  # read "00" or "01"
+                        if paste_code == "00":
+                            # Bracketed paste start - read until end sequence
+                            pasted = []
+                            while True:
+                                pc = sys.stdin.read(1)
+                                if pc == "\x1b":
+                                    # Check for end sequence
+                                    end_check = sys.stdin.read(3)
+                                    if end_check == "[201":
+                                        end_tilde = sys.stdin.read(1)
+                                        if end_tilde == "~":
+                                            break
+                                        else:
+                                            pasted.extend([pc, end_check, end_tilde])
+                                    else:
+                                        pasted.extend([pc, end_check])
+                                elif pc:
+                                    pasted.append(pc)
+                            buffer.extend(pasted)
+                            _draw_shell()
+                        elif paste_code == "01":
+                            # End sequence without start - ignore
+                            sys.stdin.read(1)  # consume "~"
+                        continue
+                    # Other CSI sequences - ignore
                 continue
-            if char.isprintable():
+            if char.isprintable() or char in ("\t",):
                 buffer.append(char)
                 _draw_shell()
     finally:
