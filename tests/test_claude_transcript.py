@@ -40,6 +40,29 @@ def test_iter_bash_tool_uses_reads_assistant_tool_intents():
     }]
 
 
+def test_iter_bash_tool_uses_reads_codex_exec_command_calls():
+    entry = {
+        "type": "response_item",
+        "timestamp": "2026-04-21T17:09:17.798Z",
+        "payload": {
+            "type": "function_call",
+            "name": "exec_command",
+            "call_id": "call_demo",
+            "arguments": "{\"cmd\":\"pwd\",\"workdir\":\"/tmp/demo\",\"yield_time_ms\":1000}",
+        },
+    }
+
+    results = iter_bash_tool_uses(entry)
+
+    assert results == [{
+        "tool_use_id": "call_demo",
+        "command": "pwd",
+        "timestamp": parse_timestamp("2026-04-21T17:09:17.798Z"),
+        "session_id": "",
+        "cwd": "/tmp/demo",
+    }]
+
+
 def test_iter_tool_results_reads_tool_result_payloads():
     entry = {
         "type": "user",
@@ -63,6 +86,36 @@ def test_iter_tool_results_reads_tool_result_payloads():
         "content": "Command completed successfully",
         "timestamp": parse_timestamp("2026-04-19T09:08:27.442Z"),
         "session_id": "abc123",
+        "state": "completed",
+    }]
+
+
+def test_iter_tool_results_reads_codex_exec_command_end_events():
+    entry = {
+        "type": "event_msg",
+        "timestamp": "2026-04-21T17:09:17.886Z",
+        "payload": {
+            "type": "exec_command_end",
+            "call_id": "call_demo",
+            "command": ["/bin/zsh", "-lc", "pwd"],
+            "cwd": "/Users/amalsameel/Code/canary",
+            "aggregated_output": "/Users/amalsameel/code/canary\n",
+            "exit_code": 0,
+            "status": "completed",
+        },
+    }
+
+    results = iter_tool_results(entry)
+
+    assert results == [{
+        "tool_use_id": "call_demo",
+        "content": "/Users/amalsameel/code/canary\n",
+        "timestamp": parse_timestamp("2026-04-21T17:09:17.886Z"),
+        "session_id": "",
+        "state": "completed",
+        "exit_code": 0,
+        "command": "pwd",
+        "cwd": "/Users/amalsameel/Code/canary",
     }]
 
 

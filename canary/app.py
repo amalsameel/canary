@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 
+from .frontend import FRONTEND_CATALOG
 from .tui import HeaderPanel, PromptArea, SubprocessTree, SubprocessItem, ThinkingIndicator
-from .local_embeddings import get_local_embedding
 from .prompt_firewall import scan_prompt
 from .risk import compute_risk_score
 from .config import get_screening_enabled, set_screening_enabled
@@ -19,6 +17,7 @@ class CanaryApp:
         self.current_prompt = ""
         self.subprocesses = SubprocessTree()
         self.thinking = ThinkingIndicator()
+        self.catalog = FRONTEND_CATALOG
         self._running = False
         self._version = "0.1.3"
         self._cwd = os.getcwd()
@@ -88,7 +87,9 @@ class CanaryApp:
             self.screening_enabled = False
             self.subprocesses.add_item(SubprocessItem(name="command", status="complete", detail="screening off"))
         elif cmd == "help":
-            self.subprocesses.add_item(SubprocessItem(name="help", status="complete", detail="on/off/exit/help/status/clear"))
+            preferred = ["/on", "/off", "/exit", "/help", "/status", "/clear"]
+            detail = "/".join(name.removeprefix("/") for name in preferred)
+            self.subprocesses.add_item(SubprocessItem(name="help", status="complete", detail=detail))
         elif cmd == "status":
             status = "on" if self.screening_enabled else "off"
             self.subprocesses.add_item(SubprocessItem(name="status", status="complete", detail=f"screening: {status}"))

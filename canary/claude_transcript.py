@@ -1,4 +1,4 @@
-"""Helpers for tailing Claude Code transcript JSONL files."""
+"""Helpers for tailing compatible Claude and Codex transcript JSONL files."""
 from __future__ import annotations
 
 import datetime as _dt
@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 
 
 def parse_timestamp(value: str | None) -> float | None:
@@ -57,8 +58,7 @@ def read_jsonl_since(path: str | Path, offset: int = 0, remainder: str = "") -> 
     return new_offset, remainder, entries
 
 
-def iter_bash_tool_uses(entry: dict) -> list[dict]:
-    """Extract Bash tool-use intents from an assistant transcript entry."""
+def _iter_claude_bash_tool_uses(entry: dict) -> list[dict]:
     if entry.get("type") != "assistant":
         return []
 
@@ -82,6 +82,44 @@ def iter_bash_tool_uses(entry: dict) -> list[dict]:
             "session_id": entry.get("sessionId", ""),
         })
     return results
+
+
+def _iter_codex_exec_command_calls(entry: dict) -> list[dict]:
+    if entry.get("type") != "response_item":
+        return []
+
+    payload = entry.get("payload", {})
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("type") != "function_call" or payload.get("name") != "exec_command":
+        return []
+
+    arguments = payload.get("arguments", "")
+    if not isinstance(arguments, str):
+        return []
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    command = str(parsed.get("cmd", "")).strip()
+    if not command:
+        return []
+
+    return [{
+        "tool_use_id": payload.get("call_id", ""),
+        "command": command,
+        "timestamp": parse_timestamp(entry.get("timestamp")),
+        "session_id": "",
+        "cwd": str(parsed.get("workdir", "") or ""),
+    }]
+
+
+def iter_bash_tool_uses(entry: dict) -> list[dict]:
+    """Extract Bash/exec-command intents from compatible transcript entries."""
+    return _iter_claude_bash_tool_uses(entry) + _iter_codex_exec_command_calls(entry)
 
 
 def flatten_tool_result_content(content) -> str:
@@ -108,8 +146,7 @@ def flatten_tool_result_content(content) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
-def iter_tool_results(entry: dict) -> list[dict]:
-    """Extract tool results from a user transcript entry."""
+def _iter_claude_tool_results(entry: dict) -> list[dict]:
     if entry.get("type") != "user":
         return []
 
@@ -127,8 +164,42 @@ def iter_tool_results(entry: dict) -> list[dict]:
             "content": flatten_tool_result_content(item.get("content", "")),
             "timestamp": parse_timestamp(entry.get("timestamp")),
             "session_id": entry.get("sessionId", ""),
+            "state": tool_result_state(flatten_tool_result_content(item.get("content", ""))),
         })
     return results
+
+
+def _iter_codex_tool_results(entry: dict) -> list[dict]:
+    if entry.get("type") != "event_msg":
+        return []
+
+    payload = entry.get("payload", {})
+    if not isinstance(payload, dict) or payload.get("type") != "exec_command_end":
+        return []
+
+    command_parts = payload.get("command", [])
+    command = ""
+    if isinstance(command_parts, list) and command_parts:
+        command = str(command_parts[-1]).strip()
+
+    status = str(payload.get("status", "") or "").lower() or "completed"
+    exit_code = payload.get("exit_code")
+
+    return [{
+        "tool_use_id": payload.get("call_id", ""),
+        "content": str(payload.get("aggregated_output", "") or ""),
+        "timestamp": parse_timestamp(entry.get("timestamp")),
+        "session_id": "",
+        "state": status,
+        "exit_code": exit_code if isinstance(exit_code, int) else None,
+        "command": command,
+        "cwd": str(payload.get("cwd", "") or ""),
+    }]
+
+
+def iter_tool_results(entry: dict) -> list[dict]:
+    """Extract tool results from compatible transcript entries."""
+    return _iter_claude_tool_results(entry) + _iter_codex_tool_results(entry)
 
 
 def tool_result_state(text: str) -> str:

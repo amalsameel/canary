@@ -122,22 +122,21 @@ def _resolve_agent(binary_name: str) -> str:
 def _mode_args(binary_name: str, mode: str) -> list[str]:
     if binary_name == "claude":
         return [] if mode == "interactive" else ["-p"]
-    if binary_name == "codex":
-        return [] if mode == "interactive" else ["exec"]
     return []
 
 
-def run_guarded_argv(
+def run_guarded_agent(
     *,
     binary_name: str,
     prompt: str,
-    argv: list[str],
+    mode: str = "interactive",
+    forwarded_args: list[str] | None = None,
     watch: bool = False,
     watch_dir: str = ".",
     binary_path: str | None = None,
     watch_label: str | None = None,
-    launch_detail: str = "screened prompt",
 ) -> int:
+    forwarded_args = forwarded_args or []
     watch_dir = os.path.abspath(watch_dir)
 
     if watch and not os.path.isdir(watch_dir):
@@ -154,38 +153,13 @@ def run_guarded_argv(
         console.print()
 
     agent_path = binary_path or _resolve_agent(binary_name)
-    ok(f"launch {binary_name}", launch_detail)
+    ok(f"launch {binary_name}", f"mode {mode}")
     console.print()
     try:
-        result = subprocess.run([agent_path, *argv])
+        result = subprocess.run([agent_path, *_mode_args(binary_name, mode), prompt, *forwarded_args])
         return result.returncode
     finally:
         _stop_watch_sidecar(sidecar)
-
-
-def run_guarded_agent(
-    *,
-    binary_name: str,
-    prompt: str,
-    mode: str = "interactive",
-    forwarded_args: list[str] | None = None,
-    watch: bool = False,
-    watch_dir: str = ".",
-    binary_path: str | None = None,
-    watch_label: str | None = None,
-) -> int:
-    forwarded_args = forwarded_args or []
-    argv = [*_mode_args(binary_name, mode), prompt, *forwarded_args]
-    return run_guarded_argv(
-        binary_name=binary_name,
-        prompt=prompt,
-        argv=argv,
-        watch=watch,
-        watch_dir=watch_dir,
-        binary_path=binary_path,
-        watch_label=watch_label,
-        launch_detail=f"mode {mode}",
-    )
 
 
 def _run_wrapper(

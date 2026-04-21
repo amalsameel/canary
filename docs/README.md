@@ -1,6 +1,6 @@
 # canary user guide
 
-This guide reflects the current codebase, not the earlier hackathon spec docs.
+This guide reflects the current shell-first codebase.
 
 ## Install
 
@@ -23,42 +23,31 @@ pip install ".[local]"
 pip install -e ".[dev]"
 ```
 
-Only the `canary` CLI is installed by package metadata right now.
-The PyPI package name is `canary-tool`, and the installed command is `canary`.
-
 ## Core Workflow
 
-Set up the backend and optional AI agent integration:
+Set up local IBM Granite and optional protected shims:
 
 ```bash
 canary setup
-```
-
-Screen a prompt directly:
-
-```bash
-canary prompt "fix the login bug"
-canary prompt "here is my key sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ" --strict
-```
-
-Install the guarded agent shims:
-
-```bash
 canary guard install
 export PATH="$HOME/.canary/bin:$PATH"
 ```
 
-Open the live safety feed in another terminal, then launch from your main terminal:
+Launch the interactive shell:
 
 ```bash
-# terminal 2
-canary audit
-
-# terminal 1
-canary watch .
+canary
 ```
 
-Inside the Canary window, type `/` to search commands like `/docs`, `/usage`, `/guard`, `/watch`, `/checkpoint`, and `/mode`.
+Inside the shell:
+
+```text
+/help
+/audit
+/watch
+/checkpoint before-auth
+review this repo and fix the auth flow
+```
 
 Inspect or restore the repo afterward:
 
@@ -68,76 +57,77 @@ canary checkpoints .
 canary rollback .
 ```
 
-## Backends
+## Shell Behavior
 
-Canary supports two runtime modes:
+- the header stays pinned at the top
+- screening starts on automatically
+- plain text is treated as a prompt
+- slash commands control Canary itself
+- `/setup` and `/guard` are available directly inside the shell
 
-- `online` uses IBM watsonx.ai for Granite embeddings and Granite chat-based bash auditing
-- `local` uses on-device Granite embeddings through Hugging Face + `torch`
+Primary slash commands:
 
-Switch or inspect modes with:
-
-```bash
-canary mode status
-canary mode local
-canary mode online
+```text
+/on
+/off
+/audit
+/audit exit
+/watch
+/watch exit
+/checkpoint
+/checkpoint before-auth delete
+/rollback
+/log
+/checkpoints
+/docs
+/setup
+/guard
+/status
+/clear
+/exit
 ```
 
-`canary setup` and `canary mode local` profile the machine first and warn when local mode is likely to be slow.
+## Protected Agents
 
-## Agent Guardrails
+`canary guard install` can install protected `claude` and `codex` launch shims when those binaries are available. Claude also gets prompt, permission, and tool hooks through `~/.claude/settings.json`, while `/audit` can tail compatible local transcript hints from both Claude and Codex sessions.
 
-`canary guard install` installs:
+## Local IBM Runtime
 
-- guarded `claude` and `codex` shims in `~/.canary/bin` when those binaries are available in `PATH`
-- Claude session integration in `~/.claude/settings.json`
-- in-session protection for Claude sessions
+Local IBM Granite is the default path now.
 
-The shim supports:
-
-- `-ignore` / `--ignore` to bypass screening once
-- `-safe` / `--safe` to force screening once
-
-With the shims installed, Canary screens launch-time prompts for both `claude` and `codex`, including `codex exec` when a prompt is provided. With the Claude session integration enabled, Canary also screens prompts submitted from inside Claude sessions, and `canary audit` can surface risky approvals and tool activity while that session is live.
-Run `canary audit` in a second terminal pane for the intended live-assessment flow.
-When a screened prompt reaches `35%` or higher, Canary also renders a risk-assessment panel.
+- `canary setup` prepares the local runtime
+- `canary usage` reports local dependency and model-cache readiness
+- the shell no longer advertises a hosted IBM fallback
 
 ## Command Surface
 
 ```bash
-canary prompt "<text>" [--strict]
+canary
 canary on
 canary off
-canary audit [--idle 60] [--background] [--log] [--stop]
+canary audit [--idle 60] [--log] [--stop]
 canary watch [path] [--idle 30] [--continuous] [--prompt TEXT] [--check-only] [--background] [--log] [--stop]
-canary checkpoint [path] [--name NAME] [--delete ID] [--delete-all]
+canary checkpoint [path] --name NAME [--delete ID] [--delete-all]
 canary checkpoints [path]
 canary rollback [path] [checkpoint_id]
 canary log [path] [--tail N] [--json]
-canary setup [--prefer auto|local|online] [--guards auto|yes|no]
+canary setup [--prefer auto|local] [--guards auto|yes|no]
 canary guard install [--watch]
 canary guard status
 canary guard remove
-canary mode [status|local|online]
 canary usage
 canary docs [topic]
 ```
 
-## Built-In Docs
+Legacy compatibility commands such as `canary prompt` and `canary mode` are still available, but they are no longer the main UX.
 
-```bash
-canary docs
-canary docs install
-canary docs setup
-canary docs prompt
-canary docs screening
-canary docs audit
-canary docs watch
-canary docs checkpoints
-canary docs backends
-canary docs guard
-canary docs usage
-```
+## Live Subprocesses
+
+- `/audit` and `/watch` stay inside the main shell as live subprocess panels.
+- Cleared prompt handoff now launches the selected AI agent in the current terminal instead of opening a second terminal.
+- If `tmux` is available, Canary can keep `/audit` visible beside the running agent in the same terminal window.
+- `/audit exit` and `/watch exit` close those subprocesses without leaving the shell.
+- `/checkpoint <name>` creates a named snapshot, and `/checkpoint <name> delete` removes it inline.
 
 ## Files Canary Writes
 
@@ -149,19 +139,17 @@ Project-local:
 Home directory:
 
 - `~/.canary/guard.json`
-- `~/.canary/usage.json`
 - `~/.canary/audit.log`
 - `~/.canary/watch.log`
+- `~/.canary/audit_events.jsonl`
+- `~/.claude/projects/*.jsonl` for compatible Claude transcript hints
+- `~/.codex/sessions/**/*.jsonl` for compatible Codex transcript hints
 
 ## Config
 
-Use `.env` for backend settings:
-
 ```env
-IBM_API_KEY=
-IBM_PROJECT_ID=
-IBM_REGION=us-south
-IBM_LOCAL=false
+IBM_LOCAL=true
+# HF_HOME=~/.cache/huggingface
 ```
 
 Use `.canary.toml` to override watch thresholds, ignore lists, entry points, and sensitive-file patterns.

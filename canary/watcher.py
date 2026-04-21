@@ -8,6 +8,9 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
+from rich.console import Group
+from rich.live import Live
+from rich.text import Text
 
 from .binary import looks_binary
 from .checkpoint import take_snapshot
@@ -17,7 +20,7 @@ from .ibm.embeddings import get_embedding
 from .risk import bar_color, render_risk_bar
 from .sensitive_files import is_sensitive
 from .session import log_event
-from .ui import BRAND, command_bar, console, divider, fail, fields, hero, note, ok, warn
+from .ui import BRAND, MUTED, TRACE, command_bar, console, divider, fail, fields, hero, live_activity_text, note, ok, warn
 
 EVENT_SYMBOLS = {
     "modified": "◆",
@@ -232,10 +235,7 @@ def _build_baseline(target: str, cfg: dict) -> tuple[dict[str, list[float]], int
 
 
 def _mode_label() -> str:
-    local = os.environ.get("IBM_LOCAL", "false").lower() == "true"
-    if local:
-        return f"[{BRAND}]local[/{BRAND}]  [dim](on-device granite · M1 GPU)[/dim]"
-    return f"[{BRAND}]online[/{BRAND}]  [dim](managed cloud inference · watsonx.ai)[/dim]"
+    return f"[{BRAND}]local[/{BRAND}]  [dim](on-device granite · no hosted fallback)[/dim]"
 
 
 def _make_observer():
@@ -258,22 +258,24 @@ def _wait_for_session(continuous: bool) -> bool:
 
     start_pos = _AUDIT_EVENTS_PATH.stat().st_size if _AUDIT_EVENTS_PATH.exists() else 0
 
-    console.print(
-        f"  [bold {BRAND}]◉[/bold {BRAND}]  "
-        f"ready  ·  waiting for agent session to begin"
-    )
-    console.print(
-        f"  [dim]╰─  monitoring activates on the first tool call[/dim]"
-    )
-    console.print()
+    def _render(frame: int) -> Group:
+        line = Text("  ")
+        line.append_text(live_activity_text("watching", frame))
+        line.append("  ·  waiting for agent session to begin", style=f"dim {MUTED}")
+        detail = Text("  ╰─  monitoring activates on the first tool call", style=f"dim {TRACE}")
+        return Group(line, detail, Text(""))
 
     try:
-        while True:
-            time.sleep(0.4)
-            if not _AUDIT_EVENTS_PATH.exists():
-                continue
-            if _AUDIT_EVENTS_PATH.stat().st_size > start_pos:
-                return True
+        with Live(_render(0), console=console, refresh_per_second=8, transient=True) as live:
+            frame = 0
+            while True:
+                time.sleep(0.4)
+                frame += 1
+                live.update(_render(frame))
+                if not _AUDIT_EVENTS_PATH.exists():
+                    continue
+                if _AUDIT_EVENTS_PATH.stat().st_size > start_pos:
+                    return True
     except KeyboardInterrupt:
         return False
 

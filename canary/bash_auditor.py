@@ -1,6 +1,4 @@
-"""Bash command security auditor powered by IBM Granite (online) or pattern rules (local)."""
-import json
-import os
+"""Bash command security auditor using local pattern rules only."""
 import re
 from dataclasses import dataclass
 
@@ -98,32 +96,6 @@ class AuditResult:
 
 
 def audit_command(command: str) -> AuditResult:
-    """Analyze a bash command using Granite (online) or pattern rules (local)."""
-    use_local = os.environ.get("IBM_LOCAL", "false").strip().lower() == "true"
-
-    if not use_local:
-        try:
-            from .ibm.generate import chat_completion
-
-            raw = chat_completion(
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Audit this command:\n\n```\n{command}\n```"},
-                ],
-                max_tokens=256,
-            )
-            raw = re.sub(r"^```(?:json)?\n?", "", raw.strip())
-            raw = re.sub(r"\n?```$", "", raw)
-            data = json.loads(raw)
-            return AuditResult(
-                risk=data.get("risk", "MEDIUM"),
-                category=data.get("category", "unknown"),
-                what=data.get("what", command),
-                repercussions=data.get("repercussions", ""),
-                via_llm=True,
-            )
-        except Exception:
-            pass
-
+    """Analyze a bash command using local pattern rules."""
     data = _pattern_audit(command)
     return AuditResult(via_llm=False, **data)

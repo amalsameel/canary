@@ -9,9 +9,11 @@ from rich.text import Text
 from rich import box
 
 BRAND = "#8DF95F"
+GLIMMER = "#8F8B86"
 WHITE = "#F5F7FA"
 MUTED = "#A5AFBA"
 FRAME = "#5A6470"
+TRACE = "#D7DCE2"
 SURFACE = "#171B21"
 SURFACE_ALT = "#20262E"
 
@@ -23,47 +25,135 @@ LOGO = """\
 [bold #8DF95F]  ███████[/bold #8DF95F]"""
 
 
-class PromptArea:
-    """Shaded prompt input area with horizontal rules."""
+def _shimmer_text(label: str, frame: int) -> Text:
+    text = Text()
+    if not label:
+        return text
+    glimmer = _glimmer_indices(label, frame)
+    for i, ch in enumerate(label):
+        style = f"bold {GLIMMER}" if i in glimmer else f"bold {WHITE}"
+        text.append(ch, style=style)
+    return text
 
-    def __init__(self, prompt: str = "", cursor: str = "▌") -> None:
-        self.prompt = prompt
-        self.cursor = cursor
+
+def _glimmer_indices(label: str, frame: int, *, window: int = 3) -> set[int]:
+    if not label:
+        return set()
+    span = min(max(1, window), len(label))
+    start = (frame % (len(label) + span - 1)) - (span - 1)
+    end = start + span
+    return set(range(max(0, start), min(len(label), end)))
+
+
+def _live_activity_text(process: str, frame: int) -> Text:
+    return _shimmer_text(f"{process.strip().lower()}...", frame)
+
+
+def _live_process_label(name: str, detail: str = "") -> str:
+    haystack = f"{name} {detail}".lower()
+    mappings = (
+        (("audit", "review"), "auditing"),
+        (("shield", "screen"), "screening"),
+        (("semantic", "scan"), "scanning"),
+        (("watch",), "watching"),
+        (("launch", "forward"), "launching"),
+        (("think",), "thinking"),
+    )
+    for needles, label in mappings:
+        if any(needle in haystack for needle in needles):
+            return label
+    return "processing"
+
+
+@dataclass
+class SubprocessItem:
+    """Single subprocess entry with status and optional detail."""
+    name: str
+    status: Literal["running", "complete", "failed", "pending"] = "pending"
+    detail: str = ""
+
+    @property
+    def icon(self) -> str:
+        icons = {
+            "running": "▶",
+            "complete": "✓",
+            "failed": "✗",
+            "pending": "○",
+        }
+        return icons.get(self.status, "○")
+
+
+class SubprocessTree:
+    """Log-style subprocess display without rectangles."""
+
+    def __init__(self, items: list[SubprocessItem] | None = None) -> None:
+        self.items = items or []
         self._frame = 0
 
-    def set_prompt(self, prompt: str) -> None:
-        self.prompt = prompt
+    def add_item(self, item: SubprocessItem) -> None:
+        self.items.append(item)
 
-    def render(self) -> RenderableType:
-        # Horizontal rule
-        width = min(80, max(40, 60))
-        rule = "─" * width
-
-        # Input line with cursor
-        display = self.prompt + self.cursor if self.cursor else self.prompt
-        input_line = Text.from_markup(f"[bold {WHITE}]>[/bold {WHITE}]  {display}")
-
-        content = Group(
-            Text(rule, style=f"dim {FRAME}"),
-            Text(""),
-            input_line,
-            Text(""),
-            Text(rule, style=f"dim {FRAME}"),
-        )
-
-        return Panel(
-            content,
-            border_style=FRAME,
-            style=f"{WHITE} on {SURFACE_ALT}",  # Lighter shading
-            box=box.ROUNDED,
-            padding=(0, 2),
-        )
+    def update_status(self, name: str, status: SubprocessItem.status) -> None:
+        for item in self.items:
+            if item.name == name:
+                item.status = status
+                break
 
     def tick(self) -> None:
         """Animation frame tick."""
         self._frame += 1
-        cursors = ["▌", "▐", "▖", "▗", "▘", "▙", "▚", "▛", "▜", "▝", "▞", "▟"]
-        self.cursor = cursors[self._frame % len(cursors)]
+
+    def render(self) -> RenderableType:
+        if not self.items:
+            return Text("")
+
+        lines: list[Text] = []
+        spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        labels = {
+            "complete": "done",
+            "failed": "failed",
+            "pending": "queued",
+        }
+
+        last = len(self.items) - 1
+        for idx, item in enumerate(self.items):
+            # Use spinner for running state, fixed icon otherwise
+            if item.status == "running":
+                icon = spinners[self._frame % len(spinners)]
+            else:
+                icon = item.icon
+
+            color = {
+                "running": BRAND,
+                "complete": BRAND,
+                "failed": "red",
+                "pending": MUTED,
+            }.get(item.status, MUTED)
+
+            branch = "╰─" if idx == last else "├─"
+            detail_branch = "   " if idx == last else "│  "
+
+            line = Text()
+            line.append(branch, style=f"dim {TRACE}")
+            line.append(" ", style=f"dim {TRACE}")
+            line.append(icon, style=f"bold {color}")
+            line.append(" ", style=f"dim {TRACE}")
+            line.append(item.name, style=f"bold {WHITE}")
+            line.append("  ", style=f"dim {TRACE}")
+            if item.status == "running":
+                line.append_text(_live_activity_text(_live_process_label(item.name, item.detail), self._frame))
+            else:
+                line.append(labels.get(item.status, "queued"), style=f"bold {color}" if item.status != "pending" else f"dim {MUTED}")
+            lines.append(line)
+
+            if item.detail:
+                detail_line = Text()
+                detail_line.append(detail_branch, style=f"dim {TRACE}")
+                detail_line.append(" ", style=f"dim {TRACE}")
+                detail_line.append(item.detail, style=f"dim {MUTED}")
+                lines.append(detail_line)
+
+        return Group(*lines)
 
 
 class HeaderPanel:
@@ -96,80 +186,63 @@ class HeaderPanel:
         )
 
 
-@dataclass
-class SubprocessItem:
-    """Single subprocess entry."""
-    name: str
-    status: Literal["running", "complete", "failed", "pending"] = "pending"
-    detail: str = ""
+class PromptArea:
+    """Shaded prompt input area with horizontal rules."""
 
-    @property
-    def icon(self) -> str:
-        icons = {
-            "running": "▶",
-            "complete": "✓",
-            "failed": "✗",
-            "pending": "○",
-        }
-        return icons.get(self.status, "○")
+    def __init__(self, prompt: str = "", cursor: str = "▌") -> None:
+        self.prompt = prompt
+        self.cursor = cursor
+        self._frame = 0
 
-
-class SubprocessTree:
-    """Tree display of subprocesses with Unicode branch characters."""
-
-    def __init__(self, items: list[SubprocessItem] | None = None) -> None:
-        self.items = items or []
-
-    def add_item(self, item: SubprocessItem) -> None:
-        self.items.append(item)
-
-    def update_status(self, name: str, status: SubprocessItem.status) -> None:
-        for item in self.items:
-            if item.name == name:
-                item.status = status
-                break
+    def set_prompt(self, prompt: str) -> None:
+        self.prompt = prompt
 
     def render(self) -> RenderableType:
-        if not self.items:
-            return Text("")  # Empty if no items
+        import re
 
-        lines: list[RenderableType] = []
-        for i, item in enumerate(self.items):
-            is_last = i == len(self.items) - 1
-            branch = "└──" if is_last else "├──"
-            style = {
-                "running": f"bold {BRAND}",
-                "complete": f"bold {BRAND}",
-                "failed": "bold white",
-                "pending": MUTED,
-            }.get(item.status, MUTED)
+        # Horizontal rule
+        width = min(80, max(40, 60))
+        rule = "─" * width
 
-            line = Text.from_markup(
-                f"[dim {MUTED}]{branch}[/dim {MUTED}]  "
-                f"[{style}]{item.icon}[/{style}]  "
-                f"{item.name}"
-            )
-            if item.detail:
-                line.append_text(Text.from_markup(f"  [dim {MUTED}]{item.detail}[/dim {MUTED}]"))
-            lines.append(line)
+        # Build styled input line with slash command highlighting
+        input_line = Text()
+        input_line.append(">", style=f"bold {WHITE}")
+        input_line.append("  ", style=WHITE)
 
-            # Add vertical connector if not last
-            if not is_last:
-                lines.append(Text.from_markup(f"[dim {MUTED}]│[/dim {MUTED}]"))
+        # Tokenize and style: /commands get BRAND color, words get white
+        prompt_with_cursor = self.prompt + self.cursor if self.cursor else self.prompt
+        tokens = re.findall(r'\S+|\s+', prompt_with_cursor)
+        for token in tokens:
+            if token.strip().startswith("/"):
+                input_line.append(token, style=f"bold {BRAND}")
+            else:
+                input_line.append(token, style="white")
+
+        content = Group(
+            Text(rule, style=f"dim {FRAME}"),
+            Text(""),
+            input_line,
+            Text(""),
+            Text(rule, style=f"dim {FRAME}"),
+        )
 
         return Panel(
-            Group(*lines),
+            content,
             border_style=FRAME,
-            style=f"{WHITE} on {SURFACE}",
+            style=f"{WHITE} on {SURFACE_ALT}",  # Lighter shading
             box=box.ROUNDED,
-            padding=(1, 2),
-            title="activity",
-            title_align="left",
+            padding=(0, 2),
         )
+
+    def tick(self) -> None:
+        """Animation frame tick."""
+        self._frame += 1
+        cursors = ["▌", "▐", "▖", "▗", "▘", "▙", "▚", "▛", "▜", "▝", "▞", "▟"]
+        self.cursor = cursors[self._frame % len(cursors)]
 
 
 class ThinkingIndicator:
-    """Animated thinking indicator with ●/○ pulse and pipeline state."""
+    """Animated thinking indicator with shimmering live-state text."""
 
     def __init__(self, is_thinking: bool = False) -> None:
         self.is_thinking = is_thinking
@@ -194,20 +267,16 @@ class ThinkingIndicator:
         if not self.is_thinking and self.pipeline_state == "complete":
             return Text("")  # Hidden when idle
 
-        # Pulse between ● and ○
-        glyphs = ["●", "○"]
-        glyph = glyphs[self._frame % 2] if self.is_thinking else "●"
-        glyph_style = f"bold {BRAND}" if self.is_thinking else MUTED
-
         # Pipeline: thinking → complete
-        thinking_style = f"bold {BRAND}" if self.pipeline_state == "thinking" else MUTED
+        thinking_style = f"bold {WHITE}" if self.pipeline_state == "thinking" else MUTED
         complete_style = f"bold {BRAND}" if self.pipeline_state == "complete" else MUTED
 
         content = Text()
-        content.append(glyph, style=glyph_style)
-        content.append("  ")
-        content.append("thinking", style=thinking_style)
-        content.append("  ━━  ", style=f"dim {FRAME}")
+        if self.is_thinking:
+            content.append_text(_live_activity_text("thinking", self._frame))
+        else:
+            content.append("thinking", style=thinking_style)
+        content.append("  ━━  ", style=f"dim {TRACE}")
         content.append("complete", style=complete_style)
 
         return Panel(

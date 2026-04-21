@@ -1,4 +1,4 @@
-"""Direct CLI guardrail integration for supported agent binaries."""
+"""Direct CLI guardrail integration for protected agent binaries."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,6 +9,8 @@ import shutil
 import shlex
 import stat
 import sys
+
+from .config import get_config_dir
 
 
 CONFIG_DIR = Path.home() / ".canary"
@@ -23,23 +25,37 @@ class GuardRecord:
     watch: bool
 
 
+def guard_config_dir() -> Path:
+    return get_config_dir()
+
+
+def guard_config_path() -> Path:
+    return guard_config_dir() / "guard.json"
+
+
+def default_shim_dir() -> Path:
+    return guard_config_dir() / "bin"
+
+
 def _ensure_dirs(shim_dir: Path) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    guard_config_dir().mkdir(parents=True, exist_ok=True)
     shim_dir.mkdir(parents=True, exist_ok=True)
 
 
 def load_guard_config() -> dict:
-    if not CONFIG_PATH.exists():
+    config_path = guard_config_path()
+    if not config_path.exists():
         return {"enabled": True, "agents": {}}
     try:
-        return json.loads(CONFIG_PATH.read_text())
+        return json.loads(config_path.read_text())
     except Exception:
         return {"enabled": True, "agents": {}}
 
 
 def save_guard_config(config: dict) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(config, indent=2))
+    config_path = guard_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2))
 
 
 def get_enabled() -> bool:
@@ -53,7 +69,7 @@ def set_enabled(value: bool) -> None:
 
 
 def resolve_real_binary(agent: str, *, shim_dir: Path | None = None) -> str | None:
-    shim_dir = (shim_dir or DEFAULT_SHIM_DIR).resolve()
+    shim_dir = (shim_dir or default_shim_dir()).resolve()
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if not entry:
             continue
@@ -67,7 +83,7 @@ def resolve_real_binary(agent: str, *, shim_dir: Path | None = None) -> str | No
 
 
 def install_guard(agent: str, *, watch: bool = False, shim_dir: Path | None = None) -> GuardRecord:
-    shim_dir = shim_dir or DEFAULT_SHIM_DIR
+    shim_dir = shim_dir or default_shim_dir()
     _ensure_dirs(shim_dir)
     real_binary = resolve_real_binary(agent, shim_dir=shim_dir)
     if not real_binary:

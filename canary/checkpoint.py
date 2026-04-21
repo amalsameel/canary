@@ -27,15 +27,27 @@ def _write_gitignore(target: str) -> None:
             f.write("# canary session data — not for version control\n*\n")
 
 
+def _normalize_checkpoint_name(name: str) -> str:
+    checkpoint_id = name.strip()
+    if not checkpoint_id:
+        raise RuntimeError("Checkpoint name required.")
+    separators = [sep for sep in (os.sep, os.altsep) if sep]
+    if any(sep in checkpoint_id for sep in separators):
+        raise RuntimeError("Checkpoint names cannot include path separators.")
+    if checkpoint_id in {".", ".."}:
+        raise RuntimeError("Checkpoint name is invalid.")
+    return checkpoint_id
+
+
 def take_snapshot(target: str, name: str | None = None) -> str:
     """Copy every non-ignored file from target to .canary/checkpoints/<id>/."""
     _write_gitignore(target)
     cps = _checkpoints_dir(target)
     os.makedirs(cps, exist_ok=True)
-    checkpoint_id = name or f"checkpoint_{int(time.time())}"
+    checkpoint_id = _normalize_checkpoint_name(name) if name is not None else f"checkpoint_{int(time.time())}"
     dest = os.path.join(cps, checkpoint_id)
     if os.path.exists(dest):
-        shutil.rmtree(dest)
+        raise RuntimeError(f"Checkpoint '{checkpoint_id}' already exists.")
     shutil.copytree(
         target,
         dest,

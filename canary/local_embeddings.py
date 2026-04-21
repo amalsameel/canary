@@ -63,11 +63,19 @@ def _load(*, local_only: bool | None = None):
     try:
         import torch
         from transformers import AutoModel, AutoTokenizer
+        from transformers.utils import logging as transformers_logging
     except ModuleNotFoundError as e:
         raise RuntimeError(
-            "local granite support is not installed. run `canary setup`, "
-            "`canary mode local`, or `pip install \"canary-watch[local]\"` and retry."
+            "local granite support is not installed. run `canary setup` "
+            "or `pip install \"canary-watch[local]\"` and retry."
         ) from e
+
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    try:
+        transformers_logging.set_verbosity_error()
+        transformers_logging.disable_progress_bar()
+    except Exception:
+        pass
 
     attempts = [local_only] if local_only is not None else [True, False]
     last_error = None
@@ -80,8 +88,7 @@ def _load(*, local_only: bool | None = None):
             last_error = e
     else:
         raise RuntimeError(
-            "could not load the local granite model. download it with `canary mode local` "
-            "or install it during `canary setup`."
+            "could not load the local granite model. download it during `canary setup`."
         ) from last_error
 
     if torch.backends.mps.is_available():

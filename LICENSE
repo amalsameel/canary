@@ -22,6 +22,6 @@ SOFTWARE.
 
 Attribution Notice
 
-This project can optionally integrate with IBM watsonx.ai in online mode.
+This project integrates with IBM watsonx.ai in local mode.
 IBM and watsonx.ai are referenced here for attribution and compatibility
 description only; their use does not imply endorsement by IBM.

@@ -30,17 +30,20 @@ def test_prompt_area_renders_with_rules():
     text = console.file.getvalue()
 
     assert ">" in text
-    assert "test prompt" in text
+    # Check for prompt content (with cursor appended, so check for parts)
+    assert "test" in text
+    assert "prompt" in text
 
 
 def test_subprocess_tree_renders_unicode_branches():
     from canary.tui import SubprocessTree, SubprocessItem
     from rich.console import Console
     import io
+    import re
 
     items = [
-        SubprocessItem(name="scan", status="complete"),
-        SubprocessItem(name="analyze", status="running"),
+        SubprocessItem(name="scan", status="complete", detail="prompt cleared"),
+        SubprocessItem(name="analyze", status="running", detail="semantic scan in flight"),
     ]
     tree = SubprocessTree(items=items)
     renderable = tree.render()
@@ -48,10 +51,13 @@ def test_subprocess_tree_renders_unicode_branches():
     # Capture the rendered output
     console = Console(file=io.StringIO(), force_terminal=True, width=120)
     console.print(renderable)
-    text = console.file.getvalue()
+    text = re.sub(r"\x1b\[[0-9;]*m", "", console.file.getvalue())
 
     assert "scan" in text
     assert "analyze" in text
+    assert "done" in text
+    assert "scanning..." in text
+    assert "prompt cleared" in text
 
 
 def test_thinking_indicator_animates():

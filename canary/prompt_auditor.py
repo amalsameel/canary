@@ -1,6 +1,4 @@
-"""Prompt intent auditor — analyses a user prompt before it reaches an LLM agent."""
-import json
-import os
+"""Prompt intent auditor — analyzes a user prompt with local rules."""
 import re
 from dataclasses import dataclass
 
@@ -118,32 +116,5 @@ def _pattern_audit(prompt: str) -> AuditResult:
 
 
 def audit_prompt(prompt: str) -> AuditResult:
-    """Analyse a user prompt using Granite (online) or pattern rules (local)."""
-    use_local = os.environ.get("IBM_LOCAL", "false").strip().lower() == "true"
-
-    if not use_local:
-        try:
-            from .ibm.generate import chat_completion
-
-            raw = chat_completion(
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user",   "content": f"Analyse this prompt:\n\n{prompt}"},
-                ],
-                max_tokens=256,
-            )
-            raw = re.sub(r"^```(?:json)?\n?", "", raw.strip())
-            raw = re.sub(r"\n?```$", "", raw)
-            data = json.loads(raw)
-            return AuditResult(
-                risk=data.get("risk", "MEDIUM"),
-                intent=data.get("intent", "unknown"),
-                likely_actions=data.get("likely_actions", ""),
-                commands=data.get("commands", "none"),
-                concern=data.get("concern", "none"),
-                via_llm=True,
-            )
-        except Exception:
-            pass
-
+    """Analyse a user prompt using local pattern rules."""
     return _pattern_audit(prompt)

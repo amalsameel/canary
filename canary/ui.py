@@ -1,210 +1,55 @@
 """Shared terminal styling for canary."""
 from __future__ import annotations
 
+from pathlib import Path
 import time
+from typing import Literal
 
 from rich import box
+from rich.align import Align
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
 from . import __version__
+from .frontend import FRONTEND_CATALOG, ShellCommand, prompt_segments
 
 console = Console()
 
-BRAND = "#8DF95F"
-WHITE = "#F5F7FA"
-WARN = WHITE
-ERROR = WHITE
-MUTED = "#A5AFBA"
-FRAME = "#5A6470"
-FRAME_SOFT = "#3C444D"
-SURFACE = "#171B21"
-SURFACE_ALT = "#20262E"
-SUBFOLDER = "•"
+BRAND = "#ccff04"
+ACCENT = "#8fd84a"
+GLIMMER = "#8f8b86"
+WARN = "yellow"
+ERROR = "red"
+WHITE = "#f4f1eb"
+MUTED = "#aaa7a2"
+SOFT = "#4a4a46"
+TRACE = "#d8d5cf"
+FRAME = BRAND
+SURFACE = "#171717"
+PROMPT_SURFACE = "#2d2d2d"
+PROMPT_IDLE = SURFACE
+SEARCH_SURFACE = "#232323"
+
+MARK = "◉"
+SPINNER_FRAMES = ["⠇", "⠋", "⠙", "⠸", "⠴", "⠦"]
 LOGO = """\
-[bold #8DF95F]  ███████[/bold #8DF95F]
-[bold #8DF95F] ███   ███  ▄▀▄ █▌█ ▄▀▄ █▀▄ █ █[/bold #8DF95F]
-[bold #8DF95F] ██         █▄█ █▐█ █▄█ █▀▄ ▐█▌[/bold #8DF95F]
-[bold #8DF95F] ███   ███  ▀ ▀ █ █ ▀ ▀ █ █  █[/bold #8DF95F]
-[bold #8DF95F]  ███████[/bold #8DF95F]"""
-
-_LOADING_GLYPHS = ["◌", "◍", "●", "◍"]
-_PULSE_STYLES = [f"bold {BRAND}", f"bold {WHITE}", f"bold {MUTED}", f"bold {BRAND}"]
-
-
-def _panel_width(max_width: int = 96, min_width: int = 54) -> int:
-    return min(max_width, max(min_width, console.size.width - 6))
-
-
-def _pulse_style(frame: int) -> str:
-    return _PULSE_STYLES[frame % len(_PULSE_STYLES)]
+[bold #ccff04]  ███████[/bold #ccff04]
+[bold #ccff04] ███   ███  ▄▀▄ █▌█ ▄▀▄ █▀▄ █ █[/bold #ccff04]
+[bold #ccff04] ██         █▄█ █▐█ █▄█ █▀▄ ▐█▌[/bold #ccff04]
+[bold #ccff04] ███   ███  ▀ ▀ █ █ ▀ ▀ █ █  █[/bold #ccff04]
+[bold #ccff04]  ███████[/bold #ccff04]"""
+C_MARK = """\
+[bold #ccff04]  ███████[/bold #ccff04]
+[bold #ccff04] ███   ███[/bold #ccff04]
+[bold #ccff04] ██[/bold #ccff04]
+[bold #ccff04] ███   ███[/bold #ccff04]
+[bold #ccff04]  ███████[/bold #ccff04]"""
 
 
-def _markup_group(block: str) -> Group:
-    lines = block.splitlines() or [""]
-    renderables = [Text.from_markup(line) if line else Text("") for line in lines]
-    return Group(*renderables)
-
-
-def _panel_title(label: str | None = None) -> Text:
-    text = Text.assemble((" CANARY ", f"bold black on {BRAND}"))
-    if label:
-        text.append("  ")
-        text.append(label.upper(), style=f"bold {WHITE}")
-    return text
-
-
-def _panel_subtitle(label: str | None = None) -> Text | None:
-    if not label:
-        return None
-    return Text(label.upper(), style=f"bold {MUTED}")
-
-
-def themed_panel(
-    content: RenderableType,
-    *,
-    title: str | Text | None = None,
-    subtitle: str | Text | None = None,
-    border_style: str = FRAME,
-    box_style=box.HEAVY_EDGE,
-    width: int | None = None,
-    padding: tuple[int, int] = (1, 2),
-    expand: bool = False,
-) -> Panel:
-    if isinstance(title, str):
-        title = _panel_title(title)
-    if isinstance(subtitle, str):
-        subtitle = _panel_subtitle(subtitle)
-    return Panel(
-        content,
-        title=title,
-        subtitle=subtitle,
-        border_style=border_style,
-        style=f"{WHITE} on {SURFACE}",
-        box=box_style,
-        width=width,
-        padding=padding,
-        expand=expand,
-        title_align="left",
-        subtitle_align="left",
-    )
-
-
-def mini_panel(
-    content: RenderableType,
-    *,
-    title: str,
-    border_style: str = FRAME,
-    frame: int = 0,
-) -> Panel:
-    label = Text.assemble(
-        (" CANARY ", f"bold black on {BRAND}"),
-        ("  ", ""),
-        (title.upper(), _pulse_style(frame) if border_style == BRAND else f"bold {WHITE}"),
-    )
-    return themed_panel(
-        content,
-        title=label,
-        border_style=border_style,
-        box_style=box.HEAVY_EDGE,
-        expand=True,
-        padding=(0, 1),
-    )
-
-
-def _soft_line(width: int | None = None, char: str = "─") -> str:
-    usable = width or min(64, max(24, console.size.width - 14))
-    return char * usable
-
-
-def _status_chip(label: str, value: str, *, active: bool) -> Text:
-    style = f"bold {BRAND}" if active else f"bold {WHITE}"
-    return Text.assemble(
-        (f" {label.upper()} ", f"bold {MUTED} on {SURFACE_ALT}"),
-        (f" {value} ", style),
-    )
-
-
-def _status_row(*, enabled: bool, watcher_running: bool, agent: str) -> Text:
-    row = Text()
-    chips = [
-        _status_chip("screen", "on" if enabled else "off", active=enabled),
-        _status_chip("watch", "ready" if watcher_running else "standby", active=watcher_running),
-        _status_chip("target", agent, active=True),
-    ]
-    for index, chip in enumerate(chips):
-        row.append_text(chip)
-        if index < len(chips) - 1:
-            row.append("  ", style="white")
-    return row
-
-
-def _detail_lines(details: list[str]) -> Group:
-    lines: list[RenderableType] = []
-    for line in details:
-        markup = line if "[" in line else f"[dim {MUTED}]{SUBFOLDER} {line}[/dim {MUTED}]"
-        lines.append(Text.from_markup(markup))
-    return Group(*lines)
-
-
-def _prompt_block(prompt: str, *, frame: int = 0, active: bool = False) -> Group:
-    glyph = _LOADING_GLYPHS[frame % len(_LOADING_GLYPHS)] if active else "●"
-    glyph_style = _pulse_style(frame) if active else f"bold {BRAND}"
-    row = Text()
-    row.append(glyph, style=glyph_style)
-    row.append("  ")
-    row.append(prompt_preview(prompt, limit=92), style=f"bold {WHITE}" if active else WHITE)
-    return Group(
-        Text("task", style=f"bold {MUTED}"),
-        row,
-    )
-
-
-def _input_line(query: str, frame: int) -> Text:
-    cursor = _LOADING_GLYPHS[frame % len(_LOADING_GLYPHS)]
-    row = Text()
-    row.append(cursor, style=_pulse_style(frame))
-    row.append("  ")
-    if query:
-        row.append(query, style=f"bold {WHITE}")
-    else:
-        row.append("type a task or :command", style=f"dim {MUTED}")
-    return row
-
-
-def _suggestion_table(suggestions: list[tuple[str, str]]) -> Table:
-    table = Table(show_header=False, box=None, padding=(0, 1), pad_edge=False, expand=True)
-    table.add_column(width=24, no_wrap=True)
-    table.add_column()
-    for index, (command, summary) in enumerate(suggestions):
-        marker = f"[bold {BRAND}]●[/bold {BRAND}]" if index == 0 else f"[dim {MUTED}]•[/dim {MUTED}]"
-        table.add_row(f"{marker}  [bold {WHITE}]{command}[/bold {WHITE}]", f"[dim {MUTED}]{summary}[/dim {MUTED}]")
-    return table
-
-
-def _pipeline_text(states: list[str], frame: int, labels: list[str]) -> Text:
-    row = Text(justify="left")
-    for index, label in enumerate(labels):
-        state = states[index]
-        if state == "complete":
-            glyph = "●"
-            style = f"bold {BRAND}"
-        elif state == "active":
-            glyph = _LOADING_GLYPHS[frame % len(_LOADING_GLYPHS)]
-            style = _pulse_style(frame)
-        else:
-            glyph = "○"
-            style = f"dim {MUTED}"
-
-        row.append(glyph, style=style)
-        row.append(f" {label.upper()}", style=style if state != "pending" else WHITE)
-        if index < len(labels) - 1:
-            connector_style = f"bold {BRAND}" if state in {"complete", "active"} else f"dim {MUTED}"
-            row.append("  ━━  ", style=connector_style)
-    return row
+def shell_frame_width() -> int:
+    return max(60, console.size.width - 2)
 
 
 def logo_block(indent: int = 2) -> str:
@@ -213,118 +58,7 @@ def logo_block(indent: int = 2) -> str:
 
 
 def wordmark() -> str:
-    return f"[bold {WHITE}]canary[/bold {WHITE}]  [dim {MUTED}]v{__version__}[/dim {MUTED}]"
-
-
-def hero(*, subtitle: str, path: str | None = None, use_logo: bool = False) -> None:
-    console.print()
-    if use_logo:
-        layout = Table.grid(expand=False, padding=(0, 3))
-        layout.add_column(no_wrap=True)
-        layout.add_column()
-
-        meta: list[RenderableType] = [
-            Text.from_markup(wordmark()),
-            Text(""),
-            Text(subtitle, style=WHITE),
-        ]
-        if path:
-            meta += [Text(""), Text(path, style=f"dim {MUTED}")]
-        meta += [
-            Text(""),
-            Text("Protected launch surface for AI coding sessions.", style=f"dim {MUTED}"),
-        ]
-        layout.add_row(_markup_group(logo_block(indent=0)), Group(*meta))
-        console.print(
-            themed_panel(
-                layout,
-                title="workspace",
-                width=min(98, _panel_width(max_width=98, min_width=62)),
-                padding=(1, 2),
-            )
-        )
-        console.print()
-        return
-
-    rows = Table.grid(padding=(0, 1))
-    rows.add_column(width=10, no_wrap=True, style=f"bold {BRAND}")
-    rows.add_column()
-    rows.add_row("canary", Text.from_markup(wordmark()))
-    rows.add_row("context", Text(subtitle, style=WHITE))
-    if path:
-        rows.add_row("path", Text(path, style=f"dim {MUTED}"))
-
-    console.print(
-        themed_panel(
-            rows,
-            title="status",
-            width=min(88, _panel_width(max_width=88, min_width=54)),
-            padding=(0, 1),
-        )
-    )
-    console.print()
-
-
-def command_bar(text: str) -> None:
-    row = Text("  ")
-    row.append(text.upper(), style=f"bold {WHITE}")
-    row.append("  ")
-    row.append(_soft_line(30, char="━"), style=FRAME)
-    console.print(row)
-    console.print()
-
-
-def fields(rows: list[tuple[str, str]]) -> None:
-    table = Table(show_header=False, box=None, padding=(0, 1), pad_edge=False)
-    table.add_column(width=12, no_wrap=True, style=f"bold {BRAND}")
-    table.add_column()
-    for label, value in rows:
-        table.add_row(f"{SUBFOLDER} {label}", value)
-    if rows:
-        console.print(table)
-        console.print()
-
-
-def divider(label: str | None = None) -> None:
-    if label:
-        console.print(f"[bold {WHITE}]{label.upper()}[/bold {WHITE}] [dim {FRAME}]{_soft_line(44, char='━')}[/dim {FRAME}]")
-    else:
-        console.print(f"[bold {FRAME}]{_soft_line(56, char='━')}[/bold {FRAME}]")
-
-
-def ok(text: str, detail: str | None = None) -> None:
-    console.print(f"  [bold {BRAND}]●[/bold {BRAND}]  {text}")
-    if detail:
-        console.print(f"     [dim {MUTED}]{SUBFOLDER} {detail}[/dim {MUTED}]")
-
-
-def warn(text: str, detail: str | None = None) -> None:
-    console.print(f"  [bold {WHITE}]![/bold {WHITE}]  {text}")
-    if detail:
-        console.print(f"     [dim {MUTED}]{SUBFOLDER} {detail}[/dim {MUTED}]")
-
-
-def fail(text: str, detail: str | None = None) -> None:
-    console.print(f"  [bold {WHITE}]x[/bold {WHITE}]  {text}")
-    if detail:
-        console.print(f"     [dim {MUTED}]{SUBFOLDER} {detail}[/dim {MUTED}]")
-
-
-def note(text: str) -> None:
-    console.print(f"  [dim {MUTED}]{SUBFOLDER} {text}[/dim {MUTED}]")
-
-
-def result_panel(content: RenderableType | str, *, padding: tuple = (1, 2)) -> None:
-    renderable = _markup_group(content) if isinstance(content, str) else content
-    console.print(
-        themed_panel(
-            renderable,
-            title="result",
-            width=min(92, _panel_width(max_width=92, min_width=54)),
-            padding=padding,
-        )
-    )
-    console.print()
+    return f"[bold white]canary[/bold white] [dim]v{__version__}[/dim]"
 
 
 def prompt_preview(text: str, *, limit: int = 64) -> str:
@@ -334,95 +68,447 @@ def prompt_preview(text: str, *, limit: int = 64) -> str:
     return normalized[: limit - 1] + "..."
 
 
-def render_launch_window(
-    target: str,
+def _markup_lines(block: str) -> list[Text]:
+    return [Text.from_markup(line) for line in block.splitlines()]
+
+
+def hero(*, subtitle: str, path: str | None = None, use_logo: bool = False) -> None:
+    console.print()
+    if use_logo:
+        console.print(Align.center(Group(*_markup_lines(LOGO))))
+        console.print()
+        console.print(Align.center(Text.from_markup(f"[dim]{subtitle}[/dim]")))
+        if path:
+            console.print(Align.center(Text.from_markup(f"[dim]{path}[/dim]")))
+        console.print(Align.center(Text.from_markup(f"[{ACCENT}]{'─' * 44}[/{ACCENT}]")))
+        console.print()
+        return
+
+    console.print(f"  {wordmark()}")
+    console.print(f"  [dim]{subtitle}[/dim]")
+    if path:
+        console.print(f"  [dim]{path}[/dim]")
+    console.print(f"  [{ACCENT}]{'─' * 72}[/{ACCENT}]")
+    console.print()
+
+
+def command_bar(text: str) -> None:
+    console.print(f"  [bold {ACCENT}]/{text}[/bold {ACCENT}]")
+
+
+def fields(rows: list[tuple[str, str]]) -> None:
+    for label, value in rows:
+        console.print(f"  [dim]{label:<10}[/dim]  {value}")
+    if rows:
+        console.print()
+
+
+def divider(label: str | None = None) -> None:
+    if label:
+        console.rule(f"[dim]{label}[/dim]", style=ACCENT)
+    else:
+        console.rule(style=ACCENT)
+
+
+def ok(text: str, detail: str | None = None) -> None:
+    console.print(f"  [bold {BRAND}]✓[/bold {BRAND}]  {text}")
+    if detail:
+        console.print(f"    [dim]{detail}[/dim]")
+
+
+def warn(text: str, detail: str | None = None) -> None:
+    console.print(f"  [bold {WARN}]⚠[/bold {WARN}]  {text}")
+    if detail:
+        console.print(f"    [dim]{detail}[/dim]")
+
+
+def fail(text: str, detail: str | None = None) -> None:
+    console.print(f"  [bold {ERROR}]✕[/bold {ERROR}]  {text}")
+    if detail:
+        console.print(f"    [dim]{detail}[/dim]")
+
+
+def note(text: str) -> None:
+    console.print(f"  [dim]·  {text}[/dim]")
+
+
+def result_panel(content, *, padding: tuple = (1, 3)) -> None:
+    del padding
+    console.print(f"  [{ACCENT}]{'·' * 72}[/{ACCENT}]")
+    if isinstance(content, str):
+        for line in content.splitlines():
+            console.print(f"  {line}")
+    else:
+        console.print(content)
+    console.print(f"  [{ACCENT}]{'·' * 72}[/{ACCENT}]")
+    console.print()
+
+
+def _short_path(path: str, *, limit: int) -> str:
+    home = str(Path.home())
+    normalized = f"~{path[len(home):]}" if path.startswith(home) else path
+    if len(normalized) <= limit:
+        return normalized
+    return "…" + normalized[-(limit - 1):]
+
+
+def shell_header_panel(
     *,
-    heading: str,
-    subheading: str,
-    query: str | None = None,
-    suggestions: list[tuple[str, str]] | None = None,
-    prompt: str | None = None,
-    footer: str | None = None,
-    details: list[str] | None = None,
-    enabled: bool = True,
-    watcher_running: bool = False,
-    agent: str = "ai coding agent",
-    pipeline: Text | None = None,
-    frame: int = 0,
-    command_hints: str = "type : to browse command options",
-) -> RenderableType:
-    heading_style = _pulse_style(frame) if pipeline is not None else f"bold {WHITE}"
-    body: list[RenderableType] = [
-        Text.from_markup(wordmark()),
+    cwd: str,
+    screening_enabled: bool,
+    recent_activity: list[str],
+    launch_target: str,
+    tips: list[ShellCommand] | None = None,
+) -> Panel:
+    tips = tips or default_shell_tips()
+    del recent_activity
+
+    width = shell_frame_width()
+    state_color = BRAND if screening_enabled else "yellow"
+    shortcuts = "  ".join(tip.name for tip in tips[:4]) or "/agent  /help"
+    logo = Align.center(Group(*_markup_lines(LOGO)), vertical="middle")
+    body = Group(
+        logo,
         Text(""),
-        Text(heading, style=heading_style),
-        Text(subheading, style=MUTED),
-        Text(""),
-        _status_row(enabled=enabled, watcher_running=watcher_running, agent=agent),
-    ]
+        Text.assemble(
+            ("canary", f"bold {WHITE}"),
+            (f"  v{__version__}", f"dim {MUTED}"),
+        ),
+        Text.assemble(
+            ("screening ", f"dim {MUTED}"),
+            ("on" if screening_enabled else "off", f"bold {state_color}"),
+            ("  ·  ", f"dim {SOFT}"),
+            ("target ", f"dim {MUTED}"),
+            (launch_target, f"bold {WHITE}"),
+            ("  ·  ", f"dim {SOFT}"),
+            ("cwd ", f"dim {MUTED}"),
+            (_short_path(cwd, limit=max(18, width - 44)), f"dim {WHITE}"),
+        ),
+        Text.assemble(
+            ("quick ", f"dim {MUTED}"),
+            (shortcuts, f"bold {ACCENT}"),
+            ("  ·  ", f"dim {SOFT}"),
+            ("plain text screens before handoff", f"dim {MUTED}"),
+        ),
+    )
 
-    if query is not None:
-        body += [
-            Text(""),
-            Text("task or command", style=f"bold {MUTED}"),
-            _input_line(query, frame),
-        ]
-        if suggestions:
-            body += [Text(""), _suggestion_table(suggestions[:6])]
-        elif query.startswith(("/", ":")):
-            body += [Text(""), Text("no matching commands", style=f"dim {MUTED}")]
-        else:
-            body += [Text(""), Text(command_hints, style=f"dim {MUTED}")]
-
-    if prompt:
-        body += [Text(""), _prompt_block(prompt, frame=frame, active=pipeline is not None)]
-
-    if pipeline is not None:
-        body += [Text(""), Text("launch sequence", style=f"bold {MUTED}"), pipeline]
-
-    if details:
-        body += [Text(""), _detail_lines(details)]
-
-    footer_text = footer or target
-    if footer_text:
-        body += [Text(""), Text(footer_text, style=f"dim {MUTED}")]
-
-    return themed_panel(
-        Group(*body),
-        title="launch surface",
-        width=_panel_width(max_width=104, min_width=58),
-        padding=(1, 2),
+    title = Text.assemble(
+        (" ", BRAND),
+        (f"v{__version__}", f"bold {MUTED}"),
+        (" ", BRAND),
+    )
+    return Panel(
+        body,
+        box=box.ROUNDED,
+        border_style=FRAME,
+        style=f"on {SURFACE}",
+        title=title,
+        padding=(0, 1),
+        width=width,
     )
 
 
-def _print_launch_surface(scene: RenderableType) -> None:
+def _shimmer_text(label: str, frame: int) -> Text:
+    text = Text()
+    if not label:
+        return text
+    glimmer = _glimmer_indices(label, frame)
+    for i, ch in enumerate(label):
+        # Keep the text itself white and move a grey character sweep across it.
+        style = f"bold {GLIMMER}" if i in glimmer else f"bold {WHITE}"
+        text.append(ch, style=style)
+    return text
+
+
+def _glimmer_indices(label: str, frame: int, *, window: int = 3) -> set[int]:
+    if not label:
+        return set()
+    span = min(max(1, window), len(label))
+    start = (frame % (len(label) + span - 1)) - (span - 1)
+    end = start + span
+    return set(range(max(0, start), min(len(label), end)))
+
+
+def live_activity_text(process: str, frame: int) -> Text:
+    return _shimmer_text(f"{process.strip().lower()}...", frame)
+
+
+def _live_process_label(name: str, detail: str = "") -> str:
+    haystack = f"{name} {detail}".lower()
+    mappings = (
+        (("audit", "review"), "auditing"),
+        (("shield", "screen"), "screening"),
+        (("semantic", "scan"), "scanning"),
+        (("watch",), "watching"),
+        (("launch", "handoff"), "launching"),
+        (("think",), "thinking"),
+    )
+    for needles, label in mappings:
+        if any(needle in haystack for needle in needles):
+            return label
+    return "processing"
+
+
+def prompt_input_bar(prompt: str = "", *, submitted: bool = False, spinner: str = "❯") -> Group:
+    width = shell_frame_width()
+    rule = Text("─" * width, style=WHITE)
+    surface = SURFACE
+    visible = prompt
+    lane_width = max(1, width - 2)
+    if len(visible) > lane_width:
+        visible = "…" + visible[-(lane_width - 1):]
+
+    prompt_line = Text()
+    prompt_line.append(f"{spinner} ", style=f"bold {WHITE} on {surface}")
+    current_len = 0
+    for token, highlight in prompt_segments(visible):
+        if current_len >= lane_width:
+            break
+        remaining = lane_width - current_len
+        if len(token) > remaining:
+            token = token[:remaining]
+        style = f"bold {BRAND}" if highlight else WHITE
+        prompt_line.append(token, style=f"{style} on {surface}")
+        current_len += len(token)
+
+    # Pad remaining space
+    if current_len < lane_width:
+        prompt_line.append(" " * (lane_width - current_len), style=f"{WHITE} on {surface}")
+
+    return Group(
+        rule,
+        prompt_line,
+        rule,
+    )
+
+
+def prompt_rules() -> tuple[Text, Text]:
+    width = shell_frame_width()
+    rule = Text("─" * width, style=WHITE)
+    return rule, rule.copy()
+
+
+def surveillance_items(prompt: str, cwd: str, agent: str, frame: int) -> Group:
+    preview = prompt_preview(prompt, limit=52)
+    stages = [
+        ("prompt shield", f"screening '{preview}'"),
+        ("semantic scan", f"comparing anchors in {cwd}"),
+        ("launch target", f"waiting to hand off into {agent}"),
+    ]
+    rows: list[RenderableType] = []
+    active = (frame // 6) % len(stages)
+    for idx, (name, detail) in enumerate(stages):
+        branch = "╰─" if idx == len(stages) - 1 else "├─"
+        detail_branch = "   " if idx == len(stages) - 1 else "│  "
+        icon = SPINNER_FRAMES[frame % len(SPINNER_FRAMES)] if idx == active else "•"
+        line = Text()
+        line.append(branch, style=f"dim {TRACE}")
+        line.append(" ", style=f"dim {TRACE}")
+        line.append(icon, style=f"bold {ACCENT}" if idx == active else f"dim {MUTED}")
+        line.append(" ", style=f"dim {TRACE}")
+        line.append(name, style=f"bold {WHITE}")
+        line.append("  ", style=f"dim {TRACE}")
+        if idx == active:
+            line.append_text(live_activity_text(_live_process_label(name, detail), frame))
+        else:
+            line.append("waiting", style=f"dim {MUTED}")
+        rows.append(line)
+
+        detail_line = Text()
+        detail_line.append(detail_branch, style=f"dim {TRACE}")
+        detail_line.append(" ", style=f"dim {TRACE}")
+        detail_line.append(detail, style=f"dim {WHITE}" if idx == active else f"dim {MUTED}")
+        rows.append(detail_line)
+    return Group(*rows)
+
+
+def shell_scene(
+    *,
+    cwd: str,
+    screening_enabled: bool,
+    recent_activity: list[str],
+    launch_target: str,
+    prompt: str = "",
+    submitted: bool = False,
+    spinner: str = "❯",
+    status: RenderableType | None = None,
+    tips: list[ShellCommand] | None = None,
+    show_prompt_lane: bool = True,
+    editor_suggestions: RenderableType | None = None,
+) -> Group:
+    body: list[RenderableType] = [
+        shell_header_panel(
+            cwd=cwd,
+            screening_enabled=screening_enabled,
+            recent_activity=recent_activity,
+            launch_target=launch_target,
+            tips=tips,
+        ),
+    ]
+    if show_prompt_lane:
+        body.append(prompt_input_bar(prompt, submitted=submitted, spinner=spinner))
+        if editor_suggestions is not None:
+            body.append(editor_suggestions)
+    if status is not None:
+        body.append(status)
+    return Group(*body)
+
+
+def animate_surveillance(prompt: str, *, cwd: str, agent: str, recent_activity: list[str], screening_enabled: bool) -> None:
+    """Show subprocess-style surveillance animation."""
+    subprocess_log = SubprocessLog()
+    preview = prompt_preview(prompt, limit=34)
+    subprocess_log.add("prompt", f"submitted '{preview}'", "complete")
+    subprocess_log.add("shield", f"screening '{preview}'", "running")
+    subprocess_log.add("semantic scan", f"comparing anchors in {cwd}", "pending")
+    subprocess_log.add("launch target", f"waiting to hand off into {agent}", "pending")
+
+    frame = 0
+    def _frame() -> Group:
+        subprocess_log.tick()
+        return shell_scene(
+            cwd=cwd,
+            screening_enabled=screening_enabled,
+            recent_activity=recent_activity,
+            launch_target=agent,
+            prompt="",
+            submitted=False,
+            spinner=SPINNER_FRAMES[frame % len(SPINNER_FRAMES)],
+            status=subprocess_log.render(),
+            tips=_default_shell_tips(),
+        )
+
     console.clear()
-    top_gap = max(1, min(3, console.size.height // 14))
-    for _ in range(top_gap):
-        console.print()
-    console.print(scene)
+    with Live(console=console, refresh_per_second=12, transient=True) as live:
+        for frame in range(12):
+            live.update(_frame())
+            time.sleep(0.08)
+        subprocess_log.update("shield", "complete", "prompt cleared")
+        subprocess_log.update("semantic scan", "running")
+
+        for frame in range(12, 24):
+            live.update(_frame())
+            time.sleep(0.08)
+        subprocess_log.update("semantic scan", "complete", "anchors compared")
+        subprocess_log.update("launch target", "pending" if not agent else "running")
+
+        for frame in range(24, 36):
+            live.update(_frame())
+            time.sleep(0.055)
+
+
+def subprocess_overview_log(
+    *,
+    screening_enabled: bool,
+    audit_active: bool,
+    watch_active: bool,
+    watch_target: str | None = None,
+    launch_target: str = "ai agent",
+    active_step: Literal["shield", "audit", "watch", "launch"] | None = None,
+    audit_external: bool = False,
+) -> SubprocessLog:
+    subprocess_log = SubprocessLog(animated=False)
+
+    shield_status: SubprocessStatus
+    if active_step == "shield":
+        shield_status = "running"
+    elif screening_enabled:
+        shield_status = "complete"
+    else:
+        shield_status = "idle"
+    if active_step in {None, "shield", "launch"}:
+        subprocess_log.add(
+            "shield",
+            "prompt firewall armed" if screening_enabled else "prompt firewall paused",
+            shield_status,
+        )
+
+    # Only show audit in subprocess log if it's not running in external terminal
+    if not audit_external:
+        audit_status: SubprocessStatus = "running" if active_step == "audit" or audit_active else "idle"
+        if audit_active or active_step == "audit":
+            subprocess_log.add(
+                "audit",
+                "companion audit stream live" if audit_active else "companion audit stream idle",
+                audit_status,
+            )
+
+    watch_status: SubprocessStatus = "running" if active_step == "watch" or watch_active else "idle"
+    if watch_active and watch_target:
+        watch_detail = f"main-terminal watch stream live for {_short_path(watch_target, limit=42)}"
+    elif watch_active:
+        watch_detail = "main-terminal watch stream live"
+    elif active_step == "watch" and watch_target:
+        watch_detail = f"starting main-terminal watch stream for {_short_path(watch_target, limit=42)}"
+    else:
+        watch_detail = "main-terminal watch stream idle"
+    if watch_active or active_step == "watch":
+        subprocess_log.add("watch", watch_detail, watch_status)
+
+    launch_ready = bool(launch_target and launch_target != "no launch target")
+    if active_step == "launch":
+        launch_status: SubprocessStatus = "running"
+    elif launch_ready:
+        launch_status = "complete"
+    else:
+        launch_status = "idle"
+    if active_step in {None, "launch"}:
+        subprocess_log.add(
+            "launch target",
+            f"launch target set to {launch_target}" if launch_ready else "launch target not set",
+            launch_status,
+        )
+
+    return subprocess_log
+
+
+def subprocess_overview(
+    *,
+    screening_enabled: bool,
+    audit_active: bool,
+    watch_active: bool,
+    watch_target: str | None = None,
+    launch_target: str = "ai agent",
+    active_step: Literal["shield", "audit", "watch", "launch"] | None = None,
+    audit_external: bool = False,
+) -> RenderableType:
+    return subprocess_overview_log(
+        screening_enabled=screening_enabled,
+        audit_active=audit_active,
+        watch_active=watch_active,
+        watch_target=watch_target,
+        launch_target=launch_target,
+        active_step=active_step,
+        audit_external=audit_external,
+    ).render()
 
 
 def protected_prompt_panel(
     target: str,
     *,
+    audit_active: bool = False,
     watcher_running: bool = False,
+    watch_target: str | None = None,
     enabled: bool = True,
-    agent: str = "ai coding agent",
+    launch_target: str = "ai agent",
 ) -> str:
-    _print_launch_surface(
-        render_launch_window(
-            target,
-            heading="Ready when you are",
-            subheading="Enter a task to open a protected AI coding session. Type : for commands.",
-            query="",
-            enabled=enabled,
-            watcher_running=watcher_running,
-            agent=agent,
-            frame=0,
-        )
-    )
-    return f"[bold {BRAND}]●[/bold {BRAND}]  "
+    console.clear()
+    console.print(shell_scene(
+        cwd=target,
+        screening_enabled=enabled,
+        recent_activity=[],
+        launch_target=launch_target,
+        status=subprocess_overview(
+            screening_enabled=enabled,
+            audit_active=audit_active,
+            watch_active=watcher_running,
+            watch_target=watch_target,
+            launch_target=launch_target,
+        ),
+        tips=_default_shell_tips(),
+        show_prompt_lane=False,
+    ))
+    return "❯"
 
 
 def show_watch_panel(
@@ -433,109 +519,194 @@ def show_watch_panel(
     prompt: str | None = None,
     footer: str | None = None,
     active_step: str | None = None,
-    agent: str = "ai coding agent",
+    launch_target: str = "ai agent",
 ) -> None:
-    labels = ["screen", "watch", agent]
-    states = ["pending", "pending", "pending"]
-    step_index = {"shield": 0, "watch": 1, "agent": 2, agent: 2}.get(active_step or "", 0)
-    for current in range(step_index + 1):
-        states[current] = "complete"
-    if active_step in {"agent", agent}:
-        states[2] = "active"
+    step_name = active_step if active_step in {"shield", "audit", "watch"} else None
+    lines = [Text.from_markup(f"[bold white]{heading}[/bold white]"), Text.from_markup(f"[dim]{subheading}[/dim]")]
+    if prompt:
+        lines.append(Text.from_markup(f"[white]\"{prompt_preview(prompt, limit=96)}\"[/white]"))
+    lines.append(Text(""))
+    lines.append(subprocess_overview(
+        screening_enabled=True,
+        audit_active=step_name == "audit",
+        watch_active=step_name == "watch",
+        watch_target=target if step_name == "watch" else None,
+        launch_target=launch_target,
+        active_step=step_name,
+    ))
+    if active_step and active_step not in {"shield", "audit", "watch"}:
+        lines.append(Text.from_markup(f"[bold {ACCENT}]{active_step}[/bold {ACCENT}]"))
+    if footer:
+        lines.append(Text(""))
+        lines.append(Text.from_markup(f"[dim]{footer}[/dim]"))
 
-    _print_launch_surface(
-        render_launch_window(
-            target,
-            heading=heading,
-            subheading=subheading,
-            query=None,
-            prompt=prompt,
-            footer=footer,
-            enabled=True,
-            watcher_running=step_index >= 1,
-            agent=agent,
-            pipeline=_pipeline_text(states, 0, labels),
-        )
-    )
-    console.print()
-
-
-def show_launch_brief(
-    target: str,
-    *,
-    heading: str,
-    subheading: str,
-    details: list[str],
-    footer: str | None = None,
-    enabled: bool = True,
-    watcher_running: bool = False,
-    agent: str = "ai coding agent",
-) -> None:
-    _print_launch_surface(
-        render_launch_window(
-            target,
-            heading=heading,
-            subheading=subheading,
-            query=None,
-            footer=footer,
-            details=details,
-            enabled=enabled,
-            watcher_running=watcher_running,
-            agent=agent,
-        )
-    )
-    console.print()
+    console.clear()
+    console.print(shell_scene(
+        cwd=target,
+        screening_enabled=True,
+        recent_activity=["Prompt accepted", "watch subprocess staged"],
+        launch_target=launch_target,
+        prompt=prompt or "",
+        submitted=bool(prompt),
+        spinner="●" if prompt else "❯",
+        status=Group(*lines),
+        tips=_default_shell_tips(),
+    ))
 
 
 def animate_pipeline(
     prompt: str,
     *,
-    agent: str = "ai coding agent",
+    agent: str = "ai agent",
     target: str | None = None,
+    audit_active: bool = False,
     watcher_running: bool = False,
+    watch_target: str | None = None,
 ) -> None:
-    footer = (
-        f"watch already armed  {SUBFOLDER} opening {agent}"
-        if watcher_running
-        else f"starting watch  {SUBFOLDER} opening {agent}"
-    )
-    labels = ["screen", "watch", agent]
-    states = ["complete", "pending", "pending"]
-    dt = 1.0 / 18
+    """Show subprocess-style animation for the pipeline."""
+    subprocess_log = SubprocessLog()
+    subprocess_log.add("prompt", f"submitted '{prompt_preview(prompt, limit=34)}'", "complete")
+    subprocess_log.add("shield", "reviewing prompt", "running")
+    if audit_active:
+        subprocess_log.add("audit", "companion audit stream live", "running")
+    if watcher_running and watch_target:
+        watch_detail = f"main-terminal watch stream live for {_short_path(watch_target, limit=42)}"
+        subprocess_log.add("watch", watch_detail, "running")
+    elif watcher_running:
+        subprocess_log.add("watch", "main-terminal watch stream live", "running")
+    subprocess_log.add(agent.title().lower(), "waiting to launch session", "pending")
 
-    def _frame(frame: int) -> RenderableType:
-        footer_text = footer if target is None else f"{footer}  {SUBFOLDER} {target}"
-        return render_launch_window(
-            target or "",
-            heading="Preparing handoff",
-            subheading="Review is complete. Finalizing the protected session.",
-            query=None,
-            prompt=prompt,
-            footer=footer_text,
-            enabled=True,
-            watcher_running=watcher_running or states[1] != "pending",
-            agent=agent,
-            pipeline=_pipeline_text(states, frame, labels),
-            frame=frame,
+    def _render(frame: int) -> Group:
+        subprocess_log.tick()
+        return shell_scene(
+            cwd=target or "",
+            screening_enabled=True,
+            recent_activity=["Prompt cleared", "Preparing live handoff"],
+            launch_target=agent,
+            prompt="",
+            submitted=False,
+            spinner=SPINNER_FRAMES[frame % len(SPINNER_FRAMES)],
+            status=subprocess_log.render(),
+            tips=_default_shell_tips(),
         )
 
     console.clear()
-    with Live(refresh_per_second=18, console=console, transient=True) as live:
-        for frame in range(10):
-            live.update(_frame(frame))
-            time.sleep(dt)
-
-        states[1] = "active"
+    with Live(console=console, refresh_per_second=12, transient=True) as live:
+        # Stage 1: screening running
         for frame in range(12):
-            live.update(_frame(frame))
-            time.sleep(dt)
+            live.update(_render(frame))
+            time.sleep(0.08)
+        subprocess_log.update("shield", "complete", "prompt cleared")
+        subprocess_log.update(agent.title().lower(), "running", "starting agent handoff")
 
-        states[1] = "complete"
-        states[2] = "active"
-        for frame in range(16):
-            live.update(_frame(frame))
-            time.sleep(dt)
+        # Stage 2: launch handoff
+        for frame in range(12, 24):
+            live.update(_render(frame))
+            time.sleep(0.08)
 
-        states[2] = "complete"
-        live.update(_frame(0))
-        time.sleep(0.2)
+        # Stage 3: launching agent
+        for frame in range(24, 36):
+            live.update(_render(frame))
+            time.sleep(0.05)
+
+
+SubprocessStatus = Literal["running", "complete", "failed", "pending", "idle"]
+
+
+class SubprocessLog:
+    """Log-style subprocess display without rectangles."""
+
+    def __init__(self, *, animated: bool = True) -> None:
+        self.items: list[tuple[str, str, SubprocessStatus, str]] = []
+        self._frame = 0
+        self._animated = animated
+
+    def add(self, name: str, detail: str = "", status: SubprocessStatus = "pending") -> None:
+        self.items.append((name, detail, status, ""))
+
+    def update(self, name: str, status: SubprocessStatus, detail: str = "") -> None:
+        for i, (n, d, s, spinner) in enumerate(self.items):
+            if n == name:
+                self.items[i] = (n, detail or d, status, spinner)
+                break
+
+    def tick(self) -> None:
+        self._frame += 1
+
+    def merged(self, *others: "SubprocessLog", animated: bool | None = None) -> "SubprocessLog":
+        merged = SubprocessLog(
+            animated=animated if animated is not None else self._animated or any(other._animated for other in others)
+        )
+        merged._frame = max([self._frame, *(other._frame for other in others)], default=0)
+        merged.items = list(self.items)
+        for other in others:
+            merged.items.extend(other.items)
+        return merged
+
+    def render(self) -> RenderableType:
+        if not self.items:
+            return Text("")
+
+        lines: list[Text] = []
+        spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        labels = {
+            "complete": "done",
+            "failed": "failed",
+            "idle": "idle",
+            "pending": "queued",
+        }
+
+        last = len(self.items) - 1
+        for idx, (name, detail, status, _) in enumerate(self.items):
+            icon = {
+                "running": spinners[self._frame % len(spinners)],
+                "complete": "✓",
+                "failed": "✗",
+                "idle": "◌",
+                "pending": "○",
+            }.get(status, "○")
+
+            color = {
+                "running": ACCENT,
+                "complete": ACCENT,
+                "failed": ERROR,
+                "idle": MUTED,
+                "pending": MUTED,
+            }.get(status, MUTED)
+
+            branch = "╰─" if idx == last else "├─"
+            detail_branch = "   " if idx == last else "│  "
+
+            line = Text()
+            line.append(branch, style=f"dim {TRACE}")
+            line.append(" ", style=f"dim {TRACE}")
+            line.append(icon, style=f"bold {color}")
+            line.append(" ", style=f"dim {TRACE}")
+            line.append(name, style=f"bold {WHITE}")
+            line.append("  ", style=f"dim {TRACE}")
+            if status == "running":
+                if self._animated:
+                    line.append_text(live_activity_text(_live_process_label(name, detail), self._frame))
+                else:
+                    line.append("running", style=f"bold {ACCENT}")
+            else:
+                label_style = f"bold {color}" if status in {"complete", "failed"} else f"dim {MUTED}"
+                line.append(labels.get(status, "queued"), style=label_style)
+            lines.append(line)
+
+            if detail:
+                detail_line = Text()
+                detail_line.append(detail_branch, style=f"dim {TRACE}")
+                detail_line.append(" ", style=f"dim {TRACE}")
+                detail_line.append(detail, style=f"dim {MUTED}")
+                lines.append(detail_line)
+
+        return Group(*lines)
+
+
+def _default_shell_tips() -> list[ShellCommand]:
+    return [FRONTEND_CATALOG.commands[0], FRONTEND_CATALOG.commands[1]]
+
+
+def default_shell_tips() -> list[ShellCommand]:
+    return _default_shell_tips()

@@ -1,160 +1,120 @@
 # canary architecture
 
-This file describes the current codebase. It is an architecture overview, not a verbatim code-generation contract.
+This file describes the current shell-first architecture.
 
 ## System Overview
 
-Canary currently has four main runtime paths:
+Canary now has four main runtime paths:
 
-1. Direct prompt review with `canary prompt`.
-2. Prompt screening through installed `claude` and `codex` shims, plus Claude hooks for in-session coverage.
-3. Background audit of Claude tool activity and pending Bash intents.
-4. Protected Claude launch plus background repository watching with checkpoints and rollback.
+1. The interactive `canary` shell.
+2. Protected launch shims for external agent CLIs such as `claude` and `codex`.
+3. The audit stream for risky tool activity.
+4. The repo watcher, checkpoint, and rollback pipeline.
 
-The product is centered on terminal workflows and local state. There is no web service or dashboard in the current codebase.
+The product is still terminal-local. There is no web service or separate backend app.
 
-## Runtime Flow
+## 1. Interactive Shell
 
-### 1. Prompt Review
+Bare `canary` launches the persistent shell in `canary/cli.py`.
 
-`canary prompt` runs two scanners:
+The shell:
 
-- `canary/prompt_firewall.py`
-  detects secrets, PII, sensitive file references, disclosure keywords, and high-entropy strings
-- `canary/semantic_firewall.py`
-  embeds the prompt and compares it against a small anchor set for semantically similar sensitive content
+- forces screening on at startup
+- keeps a pinned header rendered by `canary/ui.py`
+- treats plain text as a prompt
+- routes slash commands such as `/audit`, `/watch`, `/checkpoint`, and `/exit`
+- uses animated surveillance and pipeline handoff states before launching a real agent
 
-Findings are scored and rendered by `canary/risk.py`. Prompt scans are logged to `.canary/session.json` through `canary/session.py`.
+The UI layer for this shell lives primarily in:
 
-### 2. Agent Guard Integration
+- `canary/ui.py`
+- `canary/cli.py`
+- `canary/risk.py`
 
-`canary guard install` wires Canary into agent launch paths in two places:
+## 2. Protected Agent Shims
 
-- `canary/guard.py` writes guarded shims such as `~/.canary/bin/claude` and `~/.canary/bin/codex`
-- `canary/cli.py` installs hook commands into `~/.claude/settings.json` for Claude sessions
+`canary guard install` writes protected launch shims into `~/.canary/bin`.
 
-The shim launches `canary.guard_shim`, which:
+Relevant modules:
 
-- loads the stored guard config from `~/.canary/guard.json`
-- strips one-shot flags like `--ignore` and `--safe`
-- screens the initial command-line prompt when screening is enabled
-- forwards the original argv to the real `claude` or `codex` binary after the prompt passes review
+- `canary/guard.py`
+  stores shim metadata and writes shim scripts
+- `canary/guard_shim.py`
+  receives shim launches, strips Canary flags, and forwards safe prompts
+- `canary/wrappers.py`
+  runs screening before handing control to the real agent binary
 
-The installed hooks also screen in-session Claude prompts through `UserPromptSubmit`, so Claude sessions cover both launch-time prompts and prompts submitted after Claude is already open. Codex currently uses launch-time screening only.
+Current supported launch targets:
 
-### 3. Audit Pipeline
+- `claude`
+- `codex`
 
-The audit path is Claude-hook driven:
+Claude still gets additional in-session coverage through hooks installed in `~/.claude/settings.json`.
 
-- `prompt-hook` runs on `UserPromptSubmit` to screen in-session prompts before they reach Claude
-- `audit-hook` runs before `Bash`, `Write`, and `Edit`, and again on `PermissionRequest` for pending Bash approvals
-- `watch-hook` runs after `Bash` to scan command output
+## 3. Audit Stream
 
-These hooks append compact JSON lines to `~/.canary/audit_events.jsonl`.
+`canary audit` is now a shell-friendly audit launcher:
 
-`canary audit` is now foreground-first: it tails those events in the current terminal and also follows Claude transcript JSONL files under `~/.claude/projects/`. That lets it render pending Bash commands before execution, which is the same phase Claude exposes in its transcript viewer and permission UI. An explicit background mode is still available for the older log-backed workflow. The relevant modules are:
+- on macOS it tries to open a second Terminal window automatically
+- if that fails, it falls back to inline streaming
+
+The audit pipeline combines:
+
+- Canary hook events written to `~/.canary/audit_events.jsonl`
+- compatible Claude transcript hints from `~/.claude/projects/*.jsonl`
+- compatible Codex transcript hints from `~/.codex/sessions/**/*.jsonl`
+
+The relevant modules are:
 
 - `canary/bash_auditor.py`
-  audits bash commands
 - `canary/claude_transcript.py`
-  tails Claude transcript JSONL files and extracts pending Bash tool uses
-- `canary/prompt_firewall.py`
-  scans pending write/edit content and bash output for sensitive material
 - `canary/cli.py`
-  owns hook installation, live/background listener management, and event rendering
+- `canary/prompt_firewall.py`
 
-Mode-specific behavior:
+This is why the user-facing language is now more generic, but the deepest live translation still happens during Claude sessions because the hook layer is Claude-only.
 
-- online mode uses IBM Granite chat for bash-command auditing, with a pattern fallback on failure
-- local mode skips remote chat calls and uses the pattern-based auditor directly
+## 4. Watch Pipeline
 
-### 4. Watch Pipeline
+`canary watch` remains the protected launcher plus watcher path.
 
-`canary watch` is now a protected launcher by default. It opens a unified command window, screens the prompt locally, and only launches Claude when the prompt is clear. The underlying watcher runtime still lives in `canary/watcher.py`.
+By default it:
 
-By default the launch path:
+- opens the protected prompt surface
+- screens the prompt
+- shows the unicode surveillance / pipeline animation
+- starts the background repo watcher
+- launches the resolved agent binary
 
-- shows a structured command window with a live `/` search palette for Canary commands
-- runs the prompt and semantic scanners before any Claude handoff
-- shows a short unicode loading animation for the safe handoff
-- starts the repository watcher in the background
-- launches the real Claude binary directly so prompts are not double-screened
+The watcher runtime still lives in `canary/watcher.py`, with checkpoints in `canary/checkpoint.py` and event persistence in `canary/session.py`.
 
-By default the watcher itself:
+## Hosted IBM Default
 
-- waits for the next Claude hook event before activating
-- indexes the target directory
-- embeds non-sensitive text files into a baseline
-- creates a checkpoint automatically
-- monitors file changes until the idle timeout expires
+The redesigned shell assumes hosted IBM watsonx.ai as the primary backend.
 
-In `--background` mode, `canary watch` skips the launcher UI and behaves like the earlier monitor-only command. In `--continuous` mode the watcher skips the session wait and watches immediately until stopped.
-
-The watcher behavior includes:
-
-- per-path debounce for noisy editor save storms
-- skip rules for ignored directories, binary files, and oversized files
-- sensitive-file detection via filename globs from `canary/sensitive_files.py`
-- semantic drift checks against the current baseline embedding
-- change-rate alerts and deletion alerts
-- session logging through `canary/session.py`
-
-On macOS the watcher uses `PollingObserver` instead of a native FSEvents observer.
-
-## Backends
-
-### Online Mode
-
-Online mode uses IBM watsonx.ai:
+Used modules:
 
 - `canary/ibm/iam.py`
-  gets and caches IAM bearer tokens
 - `canary/ibm/embeddings.py`
-  calls Granite embeddings and caches vectors by content hash
 - `canary/ibm/generate.py`
-  calls Granite chat for bash auditing and caches responses
+- `canary/usage.py`
 
-Soft daily usage limits are tracked by `canary/usage.py` in `~/.canary/usage.json`.
+Local mode still exists through:
 
-### Local Mode
+- `canary/local_embeddings.py`
+- `canary/device.py`
 
-Local mode is implemented in `canary/local_embeddings.py` and `canary/device.py`.
+But it is now a compatibility path rather than the primary UX.
 
-It provides:
+## State And Files
 
-- hardware-aware recommendations during setup
-- optional dependency installation
-- local Granite model download/loading through Hugging Face + `torch`
-- runtime warnings on slower machines
-
-Current limitation: local mode covers embeddings only. There is no local Granite chat path for bash auditing in this codebase.
-
-## Checkpoints And Rollback
-
-Checkpoint management lives in `canary/checkpoint.py`.
-
-Capabilities:
-
-- create named or automatic snapshots under `.canary/checkpoints/`
-- list saved checkpoints
-- delete one or all checkpoints
-- rollback to the latest or a specific checkpoint
-- create a backup snapshot before restoring, so rollback is itself reversible
-
-## Config And State
-
-### Project-local files
+Project-local:
 
 - `.env`
-  backend mode and IBM credentials
 - `.canary.toml`
-  watcher thresholds, ignore lists, entry points, and sensitive patterns
 - `.canary/session.json`
-  append-only session log with rotation
 - `.canary/checkpoints/`
-  stored snapshots
 
-### Home-directory files
+Home-directory:
 
 - `~/.canary/guard.json`
 - `~/.canary/bin/claude`
@@ -163,41 +123,10 @@ Capabilities:
 - `~/.canary/watch.log`
 - `~/.canary/audit_events.jsonl`
 - `~/.canary/usage.json`
-- `~/.claude/projects/*.jsonl`
-
-## Module Map
-
-- `canary/cli.py`
-  main CLI entrypoint and audit/watch process management
-- `canary/prompt_firewall.py`
-  regex, entropy, and PII prompt scanning
-- `canary/semantic_firewall.py`
-  embedding-based prompt similarity checks
-- `canary/risk.py`
-  scoring and terminal rendering
-- `canary/watcher.py`
-  repo watch lifecycle and drift monitoring
-- `canary/checkpoint.py`
-  snapshot and rollback operations
-- `canary/session.py`
-  session event persistence
-- `canary/guard.py`
-  guard config and shim installation
-- `canary/guard_shim.py`
-  runtime shim entrypoint for guarded Claude launches
-- `canary/bash_auditor.py`
-  bash command risk analysis
-- `canary/claude_transcript.py`
-  Claude transcript tailing and Bash-intent extraction
-- `canary/local_embeddings.py`
-  local model loading and embedding generation
-- `canary/ibm/*`
-  watsonx.ai integrations
-- `canary/usage.py`
-  daily IBM usage tracking
 
 ## Current Limitations
 
-- The package exposes only the `canary` CLI entrypoint; helper wrapper functions are not installed as standalone scripts.
-- In-session prompt screening, transcript-backed audit, and the protected watch flow depend on Claude's hook and transcript system. Codex currently gets launch-time prompt screening only.
-- Local mode does not have a local chat model for command auditing.
+- Only Claude currently has in-session prompt and permission hooks.
+- `codex` now has transcript-backed `/audit` visibility, but it still does not get the same hook coverage.
+- Local mode still falls back to pattern-based Bash auditing instead of a local chat model.
+- The shell UI is implemented with Rich, so it intentionally approximates a modern terminal TUI rather than reproducing a proprietary frontend byte-for-byte.
