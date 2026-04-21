@@ -124,8 +124,8 @@ Legacy compatibility commands such as `canary prompt` and `canary mode` are stil
 ## Live Subprocesses
 
 - `/audit` and `/watch` stay inside the main shell as live subprocess panels.
-- Cleared prompt handoff now launches the selected AI agent in the current terminal instead of opening a second terminal.
-- If `tmux` is available, Canary can keep `/audit` visible beside the running agent in the same terminal window.
+- Cleared prompt handoff launches the selected AI agent inline in the current terminal by default. Set `CANARY_ALLOW_PARALLEL_TERMINALS=1` to prefer a second Terminal session on macOS.
+- If `tmux` is available, Canary can show `/audit` beside the running agent in a split tmux session.
 - `/audit exit` and `/watch exit` close those subprocesses without leaving the shell.
 - `/checkpoint <name>` creates a named snapshot, and `/checkpoint <name> delete` removes it inline.
 

@@ -125,8 +125,9 @@ The audit UI should not become a boxed live panel.
 
 Instead:
 
-- `canary audit` opens a second terminal when possible
-- that second terminal shows a plain streamed transcript
+- by default `canary audit` opens inline in the current terminal
+- set `CANARY_ALLOW_PARALLEL_TERMINALS=1` to prefer a second terminal on macOS
+- that terminal shows a plain streamed transcript
 - each event is rendered as compact text rows with timestamps, risk badges, and translated explanations
 - risky pending Bash approvals should appear before execution when hook or transcript data is available
 

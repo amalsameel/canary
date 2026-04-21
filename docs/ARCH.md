@@ -55,7 +55,7 @@ Claude still gets additional in-session coverage through hooks installed in `~/.
 
 `canary audit` is now a shell-friendly audit launcher:
 
-- on macOS it tries to open a second Terminal window automatically
+- by default it runs inline in the current terminal; set `CANARY_ALLOW_PARALLEL_TERMINALS=1` to prefer a second Terminal window on macOS
 - if that fails, it falls back to inline streaming
 
 The audit pipeline combines:

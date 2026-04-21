@@ -33,7 +33,7 @@ DOC_TOPICS = {
             "",
             "  type a prompt inside the canary shell to launch it through screening.",
             "  screening starts on, and only turns off when you run `/off`.",
-            "  on macOS, a cleared prompt prefers opening the selected agent in a second Terminal session.",
+            "  set CANARY_ALLOW_PARALLEL_TERMINALS=1 to prefer a second Terminal session on macOS.",
         ],
     },
     "screening": {
@@ -77,7 +77,7 @@ DOC_TOPICS = {
             "",
             "  inside the shell, `/watch` opens an inline live subprocess panel.",
             "  opens a protected prompt surface by default, then launches the resolved agent and starts the watcher.",
-            "  on macOS, the launch target prefers opening in a second Terminal session once watch is armed.",
+            "  set CANARY_ALLOW_PARALLEL_TERMINALS=1 to prefer a second Terminal session on macOS once watch is armed.",
             "  use --background for monitor-only mode; both paths create checkpoints and watch drift.",
         ],
     },

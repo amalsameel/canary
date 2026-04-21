@@ -8,12 +8,12 @@ Today, Canary is built around local IBM Granite plus protected `claude` and `cod
 
 - `canary` opens the interactive Canary shell.
 - Plain text inside the shell is treated as a prompt and screened before handoff.
-- A cleared shell prompt now launches the selected AI agent in the same terminal instead of opening a second terminal.
+- A cleared shell prompt launches the selected AI agent inline in the current terminal by default. Set `CANARY_ALLOW_PARALLEL_TERMINALS=1` to prefer a second Terminal session on macOS.
 - `/on` and `/off` toggle screening inside the shell, and `canary on` / `canary off` still work as direct commands.
 - `canary guard install` installs protected `claude` / `codex` shims in `~/.canary/bin` when those binaries are available.
 - Claude also gets prompt, permission, and tool hooks in `~/.claude/settings.json`.
 - `/audit` and `/watch` now stay inside the main shell as live subprocess panels with `/audit exit` and `/watch exit`.
-- When `/audit` is active and `tmux` is available, Canary can keep audit visible beside the running agent inside the same terminal window.
+- When `/audit` is active and `tmux` is available, Canary can show audit beside the running agent in a split tmux session.
 - `canary audit` now runs inline in the current terminal by default.
 - `canary watch` opens a protected launcher, starts repo surveillance, creates checkpoints, and watches for risky drift without leaving the current terminal.
 - `canary checkpoint`, `canary checkpoints`, `canary rollback`, and `canary log` manage snapshots and history, with named manual checkpoints required.
