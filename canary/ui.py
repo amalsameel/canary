@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from . import __version__
-from .frontend import FRONTEND_CATALOG, ShellCommand, prompt_segments
+from .frontend import FRONTEND_CATALOG, ShellCommand
 
 console = Console()
 
@@ -34,6 +34,7 @@ SEARCH_SURFACE = "#232323"
 
 MARK = "◉"
 SPINNER_FRAMES = ["⠇", "⠋", "⠙", "⠸", "⠴", "⠦"]
+PROCESSING_FRAMES = ["◐", "◓", "◑", "◒", "◴", "◷", "◶", "◵", "✶", "✷", "✹", "✺"]
 LOGO = """\
 [bold #ccff04]  ███████[/bold #ccff04]
 [bold #ccff04] ███   ███  ▄▀▄ █▌█ ▄▀▄ █▀▄ █ █[/bold #ccff04]
@@ -187,8 +188,6 @@ def shell_header_panel(
         Text.assemble(
             ("quick ", f"dim {MUTED}"),
             (shortcuts, f"bold {ACCENT}"),
-            ("  ·  ", f"dim {SOFT}"),
-            ("plain text screens before handoff", f"dim {MUTED}"),
         ),
     )
 
@@ -249,37 +248,211 @@ def _live_process_label(name: str, detail: str = "") -> str:
     return "processing"
 
 
-def prompt_input_bar(prompt: str = "", *, submitted: bool = False, spinner: str = "❯") -> Group:
+def _prompt_command_length(prompt: str) -> int:
+    if not prompt.startswith("/"):
+        return 0
+    for idx, char in enumerate(prompt):
+        if char.isspace():
+            return idx
+    return len(prompt)
+
+
+def _pasted_summary_label(word_count: int, line_count: int) -> str:
+    word_label = "word" if word_count == 1 else "words"
+    line_label = "line" if line_count == 1 else "lines"
+    return f"[Pasted text, {word_count} {word_label}, {line_count} {line_label}]"
+
+
+def _processing_symbol(frame: int | None = None) -> str:
+    frame = int(time.time() * 18) if frame is None else frame
+    return PROCESSING_FRAMES[frame % len(PROCESSING_FRAMES)]
+
+
+def _prompt_content_rows(
+    prompt: str,
+    cursor_pos: int | None,
+    lane_width: int,
+    *,
+    show_paste_summary: bool = False,
+    paste_word_count: int = 0,
+    paste_line_count: int = 0,
+) -> tuple[list[Text], list[int]]:
+    visible_prompt = (
+        _pasted_summary_label(paste_word_count, paste_line_count)
+        if show_paste_summary
+        else prompt
+    )
+    highlight_until = 0 if show_paste_summary else _prompt_command_length(prompt)
+    bounded_cursor = None
+    if cursor_pos is not None:
+        bounded_cursor = len(visible_prompt) if show_paste_summary else max(0, min(cursor_pos, len(prompt)))
+
+    rows = [Text()]
+    widths = [0]
+
+    def _push_row() -> None:
+        rows.append(Text())
+        widths.append(0)
+
+    def _append_piece(piece: str, style: str) -> None:
+        remaining = piece
+        while remaining:
+            if widths[-1] >= lane_width:
+                _push_row()
+            take = min(len(remaining), lane_width - widths[-1])
+            chunk = remaining[:take]
+            rows[-1].append(chunk, style=style)
+            widths[-1] += len(chunk)
+            remaining = remaining[take:]
+
+    def _append_token(token: str, style: str) -> None:
+        if token == "\n":
+            _push_row()
+            return
+        if token == "\t":
+            _append_piece("    ", style)
+            return
+        _append_piece(token, style)
+
+    for idx in range(len(visible_prompt) + 1):
+        if bounded_cursor is not None and idx == bounded_cursor:
+            _append_token("▌", f"bold {BRAND}")
+        if idx == len(visible_prompt):
+            break
+        style = f"bold {BRAND}" if idx < highlight_until else WHITE
+        _append_token(visible_prompt[idx], style)
+
+    return rows, widths
+
+
+def prompt_input_bar(
+    prompt: str = "",
+    *,
+    submitted: bool = False,
+    spinner: str = "❯",
+    cursor_pos: int = 0,
+    line_count: int = 0,
+    show_paste_summary: bool = False,
+    paste_word_count: int = 0,
+    paste_line_count: int = 0,
+) -> Group:
+    del submitted, line_count
     width = shell_frame_width()
     rule = Text("─" * width, style=WHITE)
     surface = SURFACE
-    visible = prompt
-    lane_width = max(1, width - 2)
-    if len(visible) > lane_width:
-        visible = "…" + visible[-(lane_width - 1):]
-
-    prompt_line = Text()
-    prompt_line.append(f"{spinner} ", style=f"bold {WHITE} on {surface}")
-    current_len = 0
-    for token, highlight in prompt_segments(visible):
-        if current_len >= lane_width:
-            break
-        remaining = lane_width - current_len
-        if len(token) > remaining:
-            token = token[:remaining]
-        style = f"bold {BRAND}" if highlight else WHITE
-        prompt_line.append(token, style=f"{style} on {surface}")
-        current_len += len(token)
-
-    # Pad remaining space
-    if current_len < lane_width:
-        prompt_line.append(" " * (lane_width - current_len), style=f"{WHITE} on {surface}")
-
-    return Group(
-        rule,
-        prompt_line,
-        rule,
+    prefix_len = len(spinner) + 1  # spinner + space
+    lane_width = max(1, width - prefix_len)
+    rows, widths = _prompt_content_rows(
+        prompt,
+        cursor_pos,
+        lane_width,
+        show_paste_summary=show_paste_summary,
+        paste_word_count=paste_word_count,
+        paste_line_count=paste_line_count,
     )
+
+    rendered_rows: list[Text] = [rule]
+    for idx, row in enumerate(rows):
+        prompt_line = Text()
+        prefix = f"{spinner} " if idx == 0 else " " * prefix_len
+        prompt_line.append(prefix, style=f"bold {WHITE} on {surface}")
+        prompt_line.append_text(row)
+        if widths[idx] < lane_width:
+            prompt_line.append(" " * (lane_width - widths[idx]), style=f"{WHITE} on {surface}")
+        rendered_rows.append(prompt_line)
+    rendered_rows.append(rule.copy())
+
+    return Group(*rendered_rows)
+
+
+def prompt_choice_bar(
+    prompt: str,
+    options: list[str],
+    *,
+    selected_index: int,
+    prefix_symbol: str = "❯",
+    hint: str | None = None,
+) -> Group:
+    width = shell_frame_width()
+    rule = Text("─" * width, style=WHITE)
+    surface = SURFACE
+    prefix_len = len(prefix_symbol) + 1
+    lane_width = max(1, width - prefix_len)
+    rows, widths = _prompt_content_rows(prompt, None, lane_width)
+
+    rendered_rows: list[Text] = [rule]
+    for idx, row in enumerate(rows):
+        prompt_line = Text()
+        prefix = f"{prefix_symbol} " if idx == 0 else " " * prefix_len
+        prompt_line.append(prefix, style=f"bold {WHITE} on {surface}")
+        row = row.copy()
+        row.stylize(f"{WHITE} on {surface}")
+        prompt_line.append_text(row)
+        if widths[idx] < lane_width:
+            prompt_line.append(" " * (lane_width - widths[idx]), style=f"{WHITE} on {surface}")
+        rendered_rows.append(prompt_line)
+
+    option_line = Text()
+    option_line.append(" " * prefix_len, style=f"bold {WHITE} on {surface}")
+    for idx, option in enumerate(options):
+        if idx > 0:
+            option_line.append("   ", style=f"{WHITE} on {surface}")
+        option_style = ACCENT if idx == selected_index else WHITE
+        option_line.append(option, style=f"bold {option_style} on {surface}")
+    option_width = option_line.cell_len - prefix_len
+    if option_width < lane_width:
+        option_line.append(" " * (lane_width - option_width), style=f"{WHITE} on {surface}")
+    rendered_rows.append(option_line)
+
+    if hint:
+        hint_line = Text()
+        hint_line.append(" " * prefix_len, style=f"bold {WHITE} on {surface}")
+        hint_line.append(hint, style=f"dim {WHITE} on {surface}")
+        hint_width = hint_line.cell_len - prefix_len
+        if hint_width < lane_width:
+            hint_line.append(" " * (lane_width - hint_width), style=f"{WHITE} on {surface}")
+        rendered_rows.append(hint_line)
+
+    rendered_rows.append(rule.copy())
+    return Group(*rendered_rows)
+
+
+def submitted_prompt_bar(
+    prompt: str,
+    *,
+    status: Literal["running", "complete", "failed"] = "running",
+    symbol: str | None = None,
+) -> Group:
+    width = shell_frame_width()
+    surface = PROMPT_SURFACE
+    if status == "running":
+        icon = symbol or _processing_symbol()
+        icon_color = ACCENT
+    elif status == "failed":
+        icon = symbol or "✕"
+        icon_color = ERROR
+    else:
+        icon = symbol or "✓"
+        icon_color = ACCENT
+
+    prefix_len = len(icon) + 1
+    lane_width = max(1, width - prefix_len)
+    rows, widths = _prompt_content_rows(prompt, None, lane_width)
+
+    rendered_rows: list[Text] = []
+    for idx, row in enumerate(rows):
+        prompt_line = Text()
+        prefix = f"{icon} " if idx == 0 else " " * prefix_len
+        prefix_style = f"bold {icon_color} on {surface}" if idx == 0 else f"{WHITE} on {surface}"
+        row = row.copy()
+        row.stylize(f"on {surface}")
+        prompt_line.append(prefix, style=prefix_style)
+        prompt_line.append_text(row)
+        if widths[idx] < lane_width:
+            prompt_line.append(" " * (lane_width - widths[idx]), style=f"{WHITE} on {surface}")
+        rendered_rows.append(prompt_line)
+
+    return Group(*rendered_rows)
 
 
 def prompt_rules() -> tuple[Text, Text]:
@@ -332,9 +505,18 @@ def shell_scene(
     submitted: bool = False,
     spinner: str = "❯",
     status: RenderableType | None = None,
+    submitted_prompt: str | None = None,
+    submitted_prompt_state: Literal["running", "complete", "failed"] = "running",
+    submitted_prompt_symbol: str | None = None,
     tips: list[ShellCommand] | None = None,
     show_prompt_lane: bool = True,
+    prompt_lane: RenderableType | None = None,
     editor_suggestions: RenderableType | None = None,
+    cursor_pos: int = 0,
+    line_count: int = 0,
+    show_paste_summary: bool = False,
+    paste_word_count: int = 0,
+    paste_line_count: int = 0,
 ) -> Group:
     body: list[RenderableType] = [
         shell_header_panel(
@@ -345,12 +527,34 @@ def shell_scene(
             tips=tips,
         ),
     ]
-    if show_prompt_lane:
-        body.append(prompt_input_bar(prompt, submitted=submitted, spinner=spinner))
-        if editor_suggestions is not None:
-            body.append(editor_suggestions)
+    if submitted_prompt:
+        body.append(
+            submitted_prompt_bar(
+                submitted_prompt,
+                status=submitted_prompt_state,
+                symbol=submitted_prompt_symbol,
+            )
+        )
     if status is not None:
         body.append(status)
+    if show_prompt_lane:
+        if prompt_lane is not None:
+            body.append(prompt_lane)
+        else:
+            body.append(
+                prompt_input_bar(
+                    prompt,
+                    submitted=submitted,
+                    spinner=spinner,
+                    cursor_pos=cursor_pos,
+                    line_count=line_count,
+                    show_paste_summary=show_paste_summary,
+                    paste_word_count=paste_word_count,
+                    paste_line_count=paste_line_count,
+                )
+            )
+        if prompt_lane is None and editor_suggestions is not None:
+            body.append(editor_suggestions)
     return Group(*body)
 
 
@@ -375,6 +579,8 @@ def animate_surveillance(prompt: str, *, cwd: str, agent: str, recent_activity: 
             submitted=False,
             spinner=SPINNER_FRAMES[frame % len(SPINNER_FRAMES)],
             status=subprocess_log.render(),
+            submitted_prompt=prompt,
+            submitted_prompt_state="running",
             tips=_default_shell_tips(),
         )
 
@@ -550,6 +756,8 @@ def show_watch_panel(
         submitted=bool(prompt),
         spinner="●" if prompt else "❯",
         status=Group(*lines),
+        submitted_prompt=prompt or None,
+        submitted_prompt_state="complete" if prompt else "running",
         tips=_default_shell_tips(),
     ))
 
@@ -587,6 +795,8 @@ def animate_pipeline(
             submitted=False,
             spinner=SPINNER_FRAMES[frame % len(SPINNER_FRAMES)],
             status=subprocess_log.render(),
+            submitted_prompt=prompt,
+            submitted_prompt_state="running",
             tips=_default_shell_tips(),
         )
 

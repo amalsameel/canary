@@ -20,6 +20,14 @@ class WatchSidecar:
     log_path: str
 
 
+def _confirm(prompt: str, default: str = "n") -> bool:
+    try:
+        answer = input(f"  {prompt} [y/n]  ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = default
+    return answer == "y"
+
+
 def _normalize_forwarded_args(args: list[str]) -> list[str]:
     if args and args[0] == "--":
         return args[1:]
@@ -75,7 +83,7 @@ def _run_prompt_gate(prompt: str, target: str) -> None:
         "severities": [f.severity for f in findings],
     }, target=target)
 
-    if findings:
+    if findings and not _confirm("continue?"):
         fail("blocked", "stopping before the agent receives the prompt")
         console.print()
         raise SystemExit(1)

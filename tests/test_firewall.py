@@ -10,8 +10,8 @@ def test_no_findings_on_safe_prompt():
 def test_openai_key_flagged():
     findings = scan_prompt("my key is sk-abc123xyzDEFGHIJKLMNOPQRSTUVWXYZ fix things")
     kinds = [f.description for f in findings]
-    assert any("OpenAI" in k or "Anthropic" in k for k in kinds)
-    assert all(f.severity == "CRITICAL" for f in findings if "OpenAI" in f.description)
+    assert "API key" in kinds
+    assert all(f.severity == "CRITICAL" for f in findings if f.description == "API key")
 
 
 def test_github_token_flagged():

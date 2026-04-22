@@ -1,6 +1,8 @@
 """click cli entrypoint."""
+import codecs
 from collections.abc import Callable
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
+from dataclasses import dataclass, field
 import datetime
 import io
 import json as _json
@@ -67,7 +69,6 @@ from .ui import (
     TRACE,
     WHITE,
     animate_pipeline,
-    animate_surveillance,
     command_bar,
     console,
     default_shell_tips,
@@ -78,6 +79,7 @@ from .ui import (
     ok,
     prompt_rules,
     prompt_preview,
+    prompt_choice_bar,
     protected_prompt_panel,
     result_panel,
     shell_frame_width,
@@ -193,6 +195,8 @@ def _render_shell_home(
     spinner: str = "❯",
     status=None,
     launch_target: str = "no launch target",
+    submitted_prompt: str | None = None,
+    submitted_prompt_state: str = "running",
 ) -> None:
     console.clear()
     console.print(_shell_home_renderable(
@@ -202,6 +206,8 @@ def _render_shell_home(
         spinner=spinner,
         status=status,
         launch_target=launch_target,
+        submitted_prompt=submitted_prompt,
+        submitted_prompt_state=submitted_prompt_state,
         show_prompt_lane=False,
     ))
 
@@ -214,10 +220,19 @@ def _shell_home_renderable(
     spinner: str = "❯",
     status: RenderableType | None = None,
     launch_target: str = "no launch target",
+    submitted_prompt: str | None = None,
+    submitted_prompt_state: str = "running",
+    submitted_prompt_symbol: str | None = None,
     show_prompt_lane: bool = True,
+    prompt_lane: RenderableType | None = None,
+    cursor_pos: int = 0,
+    line_count: int = 0,
+    show_paste_summary: bool = False,
+    paste_word_count: int = 0,
+    paste_line_count: int = 0,
 ) -> RenderableType:
     editor_suggestions = None
-    if show_prompt_lane:
+    if show_prompt_lane and prompt_lane is None:
         editor_suggestions = _editor_suggestion_renderable(prompt, width=shell_frame_width() - 2)
     return shell_scene(
         cwd=os.getcwd(),
@@ -228,9 +243,18 @@ def _shell_home_renderable(
         submitted=submitted,
         spinner=spinner,
         status=status,
+        submitted_prompt=submitted_prompt,
+        submitted_prompt_state=submitted_prompt_state,
+        submitted_prompt_symbol=submitted_prompt_symbol,
         tips=default_shell_tips(),
         show_prompt_lane=show_prompt_lane,
+        prompt_lane=prompt_lane,
         editor_suggestions=editor_suggestions,
+        cursor_pos=cursor_pos,
+        line_count=line_count,
+        show_paste_summary=show_paste_summary,
+        paste_word_count=paste_word_count,
+        paste_line_count=paste_line_count,
     )
 
 
@@ -694,28 +718,35 @@ class _ShellSubprocessView:
         command_log: SubprocessLog | None = None,
         body: RenderableType | None = None,
         active_step: str | None = None,
+        include_overview: bool = True,
     ) -> None:
         self.session_state = session_state
         self.command_log = command_log
         self.body = body
         self.active_step = active_step if active_step in {"shield", "audit", "watch", "launch"} else None
+        self.include_overview = include_overview
 
     def __rich__(self) -> RenderableType:
-        overview_log = subprocess_overview_log(
-            screening_enabled=get_enabled(),
-            audit_active=self.session_state.audit_active,
-            watch_active=self.session_state.watch_active,
-            watch_target=self.session_state.watch_target,
-            launch_target=self.session_state.launch_label,
-            active_step=self.active_step,
-            audit_external=self.session_state.audit_external,
-        )
-
-        status_block: RenderableType
         if self.command_log is not None:
-            status_block = self.command_log.merged(overview_log, animated=False).render()
+            self.command_log.tick()
+
+        if not self.include_overview:
+            status_block = self.command_log.render() if self.command_log is not None else Text("")
         else:
-            status_block = overview_log.render()
+            overview_log = subprocess_overview_log(
+                screening_enabled=get_enabled(),
+                audit_active=self.session_state.audit_active,
+                watch_active=self.session_state.watch_active,
+                watch_target=self.session_state.watch_target,
+                launch_target=self.session_state.launch_label,
+                active_step=self.active_step,
+                audit_external=self.session_state.audit_external,
+            )
+
+            if self.command_log is not None:
+                status_block = self.command_log.merged(overview_log).render()
+            else:
+                status_block = overview_log.render()
 
         blocks: list[RenderableType] = [status_block]
 
@@ -985,6 +1016,321 @@ class _PinnedShellBlock:
         self._mounted = False
 
 
+@dataclass
+class _PromptBufferState:
+    chars: list[str] = field(default_factory=list)
+    cursor_pos: int = 0
+    contains_paste: bool = False
+    show_paste_summary: bool = False
+    paste_word_count: int = 0
+    paste_line_count: int = 0
+
+    @property
+    def text(self) -> str:
+        return "".join(self.chars)
+
+    def insert_text(self, text: str, *, source: str = "type") -> bool:
+        if not text:
+            return False
+        if source == "paste":
+            text = _normalize_pasted_text(text)
+        self.chars[self.cursor_pos:self.cursor_pos] = list(text)
+        self.cursor_pos += len(text)
+        if source == "paste":
+            self.contains_paste = True
+        self._refresh_paste_summary()
+        return True
+
+    def backspace(self) -> bool:
+        if self.cursor_pos <= 0:
+            return False
+        del self.chars[self.cursor_pos - 1]
+        self.cursor_pos -= 1
+        self._refresh_paste_summary()
+        return True
+
+    def delete_forward(self) -> bool:
+        if self.cursor_pos >= len(self.chars):
+            return False
+        del self.chars[self.cursor_pos]
+        self._refresh_paste_summary()
+        return True
+
+    def move_left(self) -> bool:
+        if self.cursor_pos <= 0:
+            return False
+        self.cursor_pos -= 1
+        return True
+
+    def move_right(self) -> bool:
+        if self.cursor_pos >= len(self.chars):
+            return False
+        self.cursor_pos += 1
+        return True
+
+    def move_home(self) -> bool:
+        if self.cursor_pos == 0:
+            return False
+        self.cursor_pos = 0
+        return True
+
+    def move_end(self) -> bool:
+        end = len(self.chars)
+        if self.cursor_pos == end:
+            return False
+        self.cursor_pos = end
+        return True
+
+    def _refresh_paste_summary(self) -> None:
+        if not self.chars:
+            self.contains_paste = False
+            self.show_paste_summary = False
+            self.paste_word_count = 0
+            self.paste_line_count = 0
+            return
+
+        normalized = _normalize_pasted_text(self.text)
+        self.paste_word_count = len(normalized.split())
+        self.paste_line_count = normalized.count("\n") + 1
+        self.show_paste_summary = self.contains_paste and (
+            len(normalized) > _PASTE_SUMMARY_MAX_CHARS
+            or self.paste_word_count > _PASTE_SUMMARY_MAX_WORDS
+            or self.paste_line_count > _PASTE_SUMMARY_MAX_LINES
+        )
+
+
+_PASTE_SUMMARY_MAX_CHARS = 640
+_PASTE_SUMMARY_MAX_WORDS = 120
+_PASTE_SUMMARY_MAX_LINES = 8
+_PROMPT_PASTE_START = "\x1b[200~"
+_PROMPT_PASTE_END = "\x1b[201~"
+_PROMPT_ESCAPE_SEQUENCES = {
+    "\x1b[A": "[A",
+    "\x1b[B": "[B",
+    "\x1b[D": "[D",
+    "\x1b[C": "[C",
+    "\x1b[H": "[H",
+    "\x1b[F": "[F",
+    "\x1b[1~": "[1~",
+    "\x1b[3~": "[3~",
+    "\x1b[4~": "[4~",
+    "\x1b[7~": "[7~",
+    "\x1b[8~": "[8~",
+    "\x1bOA": "OA",
+    "\x1bOB": "OB",
+    "\x1bOD": "OD",
+    "\x1bOC": "OC",
+    "\x1bOH": "OH",
+    "\x1bOF": "OF",
+}
+_PROMPT_KNOWN_SEQUENCES = set(_PROMPT_ESCAPE_SEQUENCES) | {_PROMPT_PASTE_START}
+
+
+def _normalize_pasted_text(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+@dataclass
+class _PromptInputParser:
+    sequence_buffer: str = ""
+    paste_buffer: list[str] = field(default_factory=list)
+    in_paste: bool = False
+
+    def feed(self, text: str) -> list[tuple[str, str]]:
+        events: list[tuple[str, str]] = []
+        for char in text:
+            events.extend(self._feed_char(char))
+        return events
+
+    def _feed_char(self, char: str) -> list[tuple[str, str]]:
+        if self.in_paste:
+            return self._feed_paste_char(char)
+        if self.sequence_buffer:
+            return self._feed_sequence_char(char)
+        if char == "\x1b":
+            self.sequence_buffer = char
+            return []
+        if char == "\x03":
+            return [("interrupt", "")]
+        if char == "\x04":
+            return [("eof", "")]
+        if char in ("\x08", "\x7f"):
+            return [("backspace", "")]
+        if char in ("\r", "\n"):
+            return [("submit", "")]
+        if char.isprintable() or char == "\t":
+            return [("text", char)]
+        return []
+
+    def _feed_sequence_char(self, char: str) -> list[tuple[str, str]]:
+        candidate = self.sequence_buffer + char
+        if candidate == _PROMPT_PASTE_START:
+            self.in_paste = True
+            self.sequence_buffer = ""
+            self.paste_buffer.clear()
+            return []
+        if candidate in _PROMPT_ESCAPE_SEQUENCES:
+            self.sequence_buffer = ""
+            return [("escape", _PROMPT_ESCAPE_SEQUENCES[candidate])]
+        if any(sequence.startswith(candidate) for sequence in _PROMPT_KNOWN_SEQUENCES):
+            self.sequence_buffer = candidate
+            return []
+        if self.sequence_buffer == "\x1b" and not candidate.startswith(("\x1b[", "\x1bO")):
+            self.sequence_buffer = ""
+            return self._feed_char(char)
+        self.sequence_buffer = ""
+        return []
+
+    def _feed_paste_char(self, char: str) -> list[tuple[str, str]]:
+        if self.sequence_buffer:
+            candidate = self.sequence_buffer + char
+            if _PROMPT_PASTE_END.startswith(candidate):
+                self.sequence_buffer = candidate
+                if candidate == _PROMPT_PASTE_END:
+                    pasted = _normalize_pasted_text("".join(self.paste_buffer))
+                    self.sequence_buffer = ""
+                    self.paste_buffer.clear()
+                    self.in_paste = False
+                    return [("paste", pasted)]
+                return []
+            self.paste_buffer.append(self.sequence_buffer)
+            self.sequence_buffer = ""
+            return self._feed_paste_char(char)
+        if char == "\x1b":
+            self.sequence_buffer = char
+            return []
+        self.paste_buffer.append(char)
+        return []
+
+
+def _read_terminal_text(
+    fd: int,
+    decoder: codecs.IncrementalDecoder,
+    *,
+    timeout: float | None = None,
+) -> str | None:
+    if timeout is not None:
+        ready, _, _ = select.select([fd], [], [], timeout)
+        if not ready:
+            return None
+    try:
+        chunks = [os.read(fd, 4096)]
+        while True:
+            ready, _, _ = select.select([fd], [], [], 0)
+            if not ready:
+                break
+            chunks.append(os.read(fd, 4096))
+    except BlockingIOError:
+        return None
+    data = b"".join(chunk for chunk in chunks if chunk)
+    if not data:
+        return ""
+    return decoder.decode(data, final=False)
+
+
+def _apply_prompt_escape_sequence(state: _PromptBufferState, sequence: str) -> bool:
+    if sequence in {"[D", "OD"}:
+        return state.move_left()
+    if sequence in {"[C", "OC"}:
+        return state.move_right()
+    if sequence in {"[H", "OH", "[1~", "[7~"}:
+        return state.move_home()
+    if sequence in {"[F", "OF", "[4~", "[8~"}:
+        return state.move_end()
+    if sequence == "[3~":
+        return state.delete_forward()
+    return False
+
+
+def _update_choice_selection(
+    selected_index: int,
+    option_count: int,
+    *,
+    text: str | None = None,
+    escape: str | None = None,
+) -> int:
+    if option_count <= 0:
+        return 0
+
+    if text in {"1", "y", "Y"}:
+        return 0
+    if text in {"2", "n", "N"}:
+        return min(1, option_count - 1)
+    if escape in {"[H", "OH", "[1~", "[7~"}:
+        return 0
+    if escape in {"[F", "OF", "[4~", "[8~"}:
+        return option_count - 1
+    if escape in {"[D", "OD", "[A", "OA"}:
+        return max(0, selected_index - 1)
+    if escape in {"[C", "OC", "[B", "OB"}:
+        return min(option_count - 1, selected_index + 1)
+    return selected_index
+
+
+def _read_pinned_confirmation_choice(
+    shell_block: _PinnedShellBlock,
+    render_choice: Callable[[int], RenderableType],
+    *,
+    option_count: int,
+    default_index: int = 0,
+) -> int:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return default_index
+
+    try:
+        import termios
+        import tty
+    except ImportError:
+        return default_index
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    decoder = codecs.getincrementaldecoder("utf-8")("ignore")
+    parser = _PromptInputParser()
+    selected_index = max(0, min(default_index, max(0, option_count - 1)))
+
+    def _draw_choice() -> None:
+        shell_block.update(render_choice(selected_index))
+
+    try:
+        tty.setraw(fd)
+        sys.stdout.write("\x1b[?2004h")
+        sys.stdout.write("\x1b[?25l")
+        _draw_choice()
+        sys.stdout.flush()
+
+        while True:
+            chunk = _read_terminal_text(fd, decoder, timeout=0.12)
+            if chunk is None:
+                continue
+            if chunk == "":
+                return selected_index
+
+            changed = False
+            for event, payload in parser.feed(chunk):
+                if event == "submit":
+                    return selected_index
+                if event in {"interrupt", "eof"}:
+                    return selected_index
+                if event == "escape":
+                    updated = _update_choice_selection(selected_index, option_count, escape=payload)
+                    changed = changed or updated != selected_index
+                    selected_index = updated
+                    continue
+                if event == "text":
+                    updated = _update_choice_selection(selected_index, option_count, text=payload)
+                    changed = changed or updated != selected_index
+                    selected_index = updated
+
+            if changed:
+                _draw_choice()
+    finally:
+        sys.stdout.write("\x1b[?2004l")
+        sys.stdout.write("\x1b[?25h")
+        sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
 def _read_prompt_line(prefix_symbol: str = "❯") -> str:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         top_rule, bottom_rule = prompt_rules()
@@ -1039,8 +1385,7 @@ def _read_prompt_line(prefix_symbol: str = "❯") -> str:
 
     try:
         tty.setraw(fd)
-        # Keep cursor visible for better UX
-        sys.stdout.write("\x1b[?25h")
+        sys.stdout.write("\x1b[?25l")
         # Reserve max space initially
         max_rows = 3 + _EDITOR_SUGGESTION_ROWS
         sys.stdout.write("\n" * (max_rows - 1))
@@ -1068,42 +1413,13 @@ def _read_prompt_line(prefix_symbol: str = "❯") -> str:
                     _draw_editor()
                 continue
             if char == "\x1b":
-                # Handle escape sequences including bracketed paste
                 next_char = sys.stdin.read(1)
                 if next_char == "[":
-                    seq_char = sys.stdin.read(1)
-                    # Check for bracketed paste: \x1b[200~ (start) and \x1b[201~ (end)
-                    if seq_char == "2":
-                        paste_code = sys.stdin.read(2)  # read "00" or "01"
-                        if paste_code == "00":
-                            # Bracketed paste start - read until end sequence
-                            pasted = []
-                            while True:
-                                pc = sys.stdin.read(1)
-                                if pc == "\x1b":
-                                    # Check for end sequence
-                                    end_check = sys.stdin.read(3)
-                                    if end_check == "[201":
-                                        end_tilde = sys.stdin.read(1)
-                                        if end_tilde == "~":
-                                            break
-                                        else:
-                                            pasted.extend([pc, end_check, end_tilde])
-                                    else:
-                                        pasted.extend([pc, end_check])
-                                elif pc:
-                                    pasted.append(pc)
-                            buffer.extend(pasted)
-                            _draw_editor()
-                        elif paste_code == "01":
-                            # End sequence without start - ignore
-                            sys.stdin.read(1)  # consume "~"
-                        continue
-                    # Other CSI sequences - ignore
+                    sys.stdin.read(1)
                 continue
-            if char.isprintable() or char in ("\t",):
+            if char.isprintable():
                 buffer.append(char)
-                _draw_editor()
+            _draw_editor()
     finally:
         sys.stdout.write("\x1b[?25h")
         sys.stdout.flush()
@@ -1117,6 +1433,8 @@ def _read_pinned_prompt_line(
     *,
     prefix_symbol: str = "❯",
     status: RenderableType | None = None,
+    submitted_prompt: str | None = None,
+    submitted_prompt_state: str = "running",
 ) -> str:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return _read_prompt_line(prefix_symbol)
@@ -1129,85 +1447,75 @@ def _read_pinned_prompt_line(
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
-    buffer: list[str] = []
+    state = _PromptBufferState()
+    decoder = codecs.getincrementaldecoder("utf-8")("ignore")
+    parser = _PromptInputParser()
 
     def _draw_shell() -> None:
+        display_text = state.text
+        line_count = display_text.count("\n") + 1 if display_text else 0
+
         shell_block.update(_shell_home_renderable(
             recent_activity,
-            prompt="".join(buffer),
+            prompt=display_text,
             submitted=False,
             spinner=prefix_symbol,
             status=status,
             launch_target=session_state.launch_label,
+            submitted_prompt=submitted_prompt,
+            submitted_prompt_state=submitted_prompt_state,
             show_prompt_lane=True,
+            cursor_pos=state.cursor_pos,
+            line_count=line_count if line_count > 1 else 0,
+            show_paste_summary=state.show_paste_summary,
+            paste_word_count=state.paste_word_count,
+            paste_line_count=state.paste_line_count,
         ))
 
     try:
         tty.setraw(fd)
-        # Keep cursor visible for better UX
-        sys.stdout.write("\x1b[?25h")
+        # Use bracketed paste in raw mode and render a software cursor in the prompt lane.
+        sys.stdout.write("\x1b[?2004h")
+        sys.stdout.write("\x1b[?25l")
         _draw_shell()
         sys.stdout.flush()
 
         while True:
-            ready, _, _ = select.select([fd], [], [], 0.12)
-            if not ready:
+            chunk = _read_terminal_text(fd, decoder, timeout=0.12)
+            if chunk is None:
                 _draw_shell()
                 continue
+            if chunk == "":
+                raise EOFError
 
-            char = sys.stdin.read(1)
+            changed = False
+            for event, payload in parser.feed(chunk):
+                if event == "submit":
+                    sys.stdout.write("\r\n")
+                    sys.stdout.flush()
+                    return state.text.strip()
+                if event == "interrupt":
+                    raise KeyboardInterrupt
+                if event == "eof":
+                    if not state.chars:
+                        raise EOFError
+                    continue
+                if event == "backspace":
+                    changed = state.backspace() or changed
+                    continue
+                if event == "escape":
+                    changed = _apply_prompt_escape_sequence(state, payload) or changed
+                    continue
+                if event == "paste":
+                    changed = state.insert_text(payload, source="paste") or changed
+                    continue
+                if event == "text":
+                    changed = state.insert_text(payload, source="type") or changed
 
-            if char in ("\r", "\n"):
-                return "".join(buffer).strip()
-            if char == "\x03":
-                raise KeyboardInterrupt
-            if char == "\x04":
-                if not buffer:
-                    raise EOFError
-                continue
-            if char in ("\x08", "\x7f"):
-                if buffer:
-                    buffer.pop()
-                    _draw_shell()
-                continue
-            if char == "\x1b":
-                # Handle escape sequences including bracketed paste
-                next_char = sys.stdin.read(1)
-                if next_char == "[":
-                    seq_char = sys.stdin.read(1)
-                    # Check for bracketed paste: \x1b[200~ (start) and \x1b[201~ (end)
-                    if seq_char == "2":
-                        paste_code = sys.stdin.read(2)  # read "00" or "01"
-                        if paste_code == "00":
-                            # Bracketed paste start - read until end sequence
-                            pasted = []
-                            while True:
-                                pc = sys.stdin.read(1)
-                                if pc == "\x1b":
-                                    # Check for end sequence
-                                    end_check = sys.stdin.read(3)
-                                    if end_check == "[201":
-                                        end_tilde = sys.stdin.read(1)
-                                        if end_tilde == "~":
-                                            break
-                                        else:
-                                            pasted.extend([pc, end_check, end_tilde])
-                                    else:
-                                        pasted.extend([pc, end_check])
-                                elif pc:
-                                    pasted.append(pc)
-                            buffer.extend(pasted)
-                            _draw_shell()
-                        elif paste_code == "01":
-                            # End sequence without start - ignore
-                            sys.stdin.read(1)  # consume "~"
-                        continue
-                    # Other CSI sequences - ignore
-                continue
-            if char.isprintable() or char in ("\t",):
-                buffer.append(char)
+            if changed:
                 _draw_shell()
     finally:
+        sys.stdout.write("\x1b[?2004l")
         sys.stdout.write("\x1b[?25h")
         sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -1764,8 +2072,33 @@ def _handle_shell_command(
     return _fail(f"unknown slash command: /{name}")
 
 
-def _screen_prompt_with_motion(prompt: str, *, target: str, agent_name: str, recent_activity: list[str]) -> tuple[list, int]:
+def _submitted_prompt_state_from_log(subprocess_log: SubprocessLog) -> str:
+    if not subprocess_log.items:
+        return "complete"
+    return "failed" if subprocess_log.items[0][2] == "failed" else "complete"
+
+
+def _screen_prompt_with_motion(
+    prompt: str,
+    *,
+    target: str,
+    agent_name: str,
+    session_state: ShellSessionState,
+    refresh_shell: Callable[[RenderableType | None], None],
+) -> tuple[list, int, SubprocessLog]:
     result: dict[str, tuple[list, int]] = {}
+    preview = prompt_preview(prompt, limit=34)
+    subprocess_log = SubprocessLog()
+    subprocess_log.add("prompt", f"submitted '{preview}'", "complete")
+    subprocess_log.add("shield", f"screening '{preview}'", "running")
+    subprocess_log.add("semantic scan", f"comparing anchors in {target}", "pending")
+    subprocess_log.add("launch target", f"waiting to hand off into {agent_name}", "pending")
+
+    status_view = _ShellSubprocessView(
+        session_state,
+        command_log=subprocess_log,
+        include_overview=False,
+    )
 
     def _worker() -> None:
         result["review"] = _review_prompt(prompt, target=target, render_clear=False, show_status=False)
@@ -1773,15 +2106,130 @@ def _screen_prompt_with_motion(prompt: str, *, target: str, agent_name: str, rec
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
 
-    animate_surveillance(
-        prompt,
-        cwd=target,
-        agent=agent_name,
-        recent_activity=recent_activity,
-        screening_enabled=get_enabled(),
-    )
+    started = time.time()
+    stage = 0
+    while thread.is_alive() or time.time() - started < 0.42:
+        elapsed = time.time() - started
+        if elapsed >= 0.16 and stage < 1:
+            subprocess_log.update("shield", "complete", "prompt cleared")
+            subprocess_log.update("semantic scan", "running", f"comparing anchors in {target}")
+            stage = 1
+        if elapsed >= 0.32 and stage < 2:
+            subprocess_log.update("semantic scan", "complete", "anchors compared")
+            subprocess_log.update("launch target", "pending", f"waiting to hand off into {agent_name}")
+            stage = 2
+        refresh_shell(status_view)
+        time.sleep(0.05)
+
     thread.join()
-    return result["review"]
+    return result["review"][0], result["review"][1], subprocess_log
+
+
+def _risky_prompt_findings_table(findings: list) -> Table:
+    table = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
+    table.add_column(width=12, no_wrap=True)
+    table.add_column()
+    for finding in findings:
+        color = SEVERITY_COLOR.get(finding.severity, "white")
+        icon = SEVERITY_ICON.get(finding.severity, "◆")
+        table.add_row(
+            f"[{color}]{icon}  {finding.severity.lower()}[/{color}]",
+            f"[dim]{finding.description.lower()}[/dim]",
+        )
+    return table
+
+
+def _shell_risky_prompt_body(
+    findings: list,
+    *,
+    title: str,
+    detail: str,
+    footer: str | None = None,
+) -> RenderableType:
+    rows: list[RenderableType] = [
+        Text.from_markup(f"[bold {ERROR}]{title}[/bold {ERROR}]"),
+        Text.from_markup(f"[dim]{detail}[/dim]"),
+        Text(""),
+        Text.from_markup(f"[bold {ACCENT}]findings[/bold {ACCENT}]"),
+        _risky_prompt_findings_table(findings),
+    ]
+    if footer:
+        rows.extend([Text(""), Text.from_markup(f"[dim]{footer}[/dim]")])
+    return Group(*rows)
+
+
+def _confirm_risky_shell_handoff(
+    findings: list,
+    *,
+    prompt_log: SubprocessLog,
+    agent_name: str,
+    session_state: ShellSessionState,
+    refresh_shell: Callable[[RenderableType | None], None],
+    confirm_callback: Callable[[str, RenderableType], bool] | None = None,
+) -> tuple[bool, RenderableType]:
+    prompt_log.update("shield", "complete", "findings require review")
+    prompt_log.update("launch target", "running", "waiting for confirmation")
+
+    review_renderable = _ShellSubprocessView(
+        session_state,
+        command_log=prompt_log,
+        body=_shell_risky_prompt_body(
+            findings,
+            title="Risky prompt",
+            detail="Canary found risky content before handoff.",
+            footer="review the findings, then choose whether to hand the prompt off anyway.",
+        ),
+        include_overview=False,
+    )
+    refresh_shell(review_renderable)
+
+    confirmed = confirm_callback("continue?", review_renderable) if confirm_callback else _confirm("continue?")
+    if not confirmed:
+        prompt_log.update("shield", "complete", "blocked risky prompt")
+        prompt_log.update("launch target", "failed", "blocked - risky content detected")
+        return False, _ShellSubprocessView(
+            session_state,
+            command_log=prompt_log,
+            body=_shell_risky_prompt_body(
+                findings,
+                title="Prompt blocked",
+                detail="Canary kept the risky prompt from reaching the agent.",
+            ),
+            include_overview=False,
+        )
+
+    prompt_log.update("shield", "complete", "risky prompt approved")
+    prompt_log.update("launch target", "pending", f"user confirmed risky handoff into {agent_name}")
+    return True, _ShellSubprocessView(
+        session_state,
+        command_log=prompt_log,
+        include_overview=False,
+    )
+
+
+def _animate_agent_handoff_in_shell(
+    subprocess_log: SubprocessLog,
+    *,
+    agent_name: str,
+    session_state: ShellSessionState,
+    refresh_shell: Callable[[RenderableType | None], None],
+) -> RenderableType:
+    subprocess_log.update("launch target", "running", f"starting {agent_name} handoff")
+    status_view = _ShellSubprocessView(
+        session_state,
+        command_log=subprocess_log,
+        include_overview=False,
+    )
+    started = time.time()
+    while time.time() - started < 0.36:
+        refresh_shell(status_view)
+        time.sleep(0.05)
+    subprocess_log.update("launch target", "complete", f"handed off into {agent_name}")
+    return _ShellSubprocessView(
+        session_state,
+        command_log=subprocess_log,
+        include_overview=False,
+    )
 
 
 def _restore_terminal_cursor() -> None:
@@ -1859,6 +2307,8 @@ def _interactive_shell() -> None:
     ]
     shell_block: _PinnedShellBlock | None = None
     status_renderable: RenderableType | None = None
+    submitted_prompt: str | None = None
+    submitted_prompt_state = "running"
 
     def _release_shell_block() -> None:
         nonlocal shell_block
@@ -1866,25 +2316,95 @@ def _interactive_shell() -> None:
             shell_block.close()
             shell_block = None
 
+    def _render_home(
+        *,
+        prompt: str = "",
+        status: RenderableType | None = None,
+        prompt_lane: RenderableType | None = None,
+        cursor_pos: int = 0,
+        line_count: int = 0,
+        show_paste_summary: bool = False,
+        paste_word_count: int = 0,
+        paste_line_count: int = 0,
+    ) -> RenderableType:
+        return _shell_home_renderable(
+            recent_activity,
+            prompt=prompt,
+            submitted=False,
+            status=status,
+            launch_target=session_state.launch_label,
+            submitted_prompt=submitted_prompt,
+            submitted_prompt_state=submitted_prompt_state,
+            show_prompt_lane=True,
+            prompt_lane=prompt_lane,
+            cursor_pos=cursor_pos,
+            line_count=line_count,
+            show_paste_summary=show_paste_summary,
+            paste_word_count=paste_word_count,
+            paste_line_count=paste_line_count,
+        )
+
+    def _confirm_in_prompt_box(question: str, status_view: RenderableType) -> bool:
+        if shell_block is None:
+            return _confirm(question)
+
+        options = ["Yes", "No"]
+        selected = _read_pinned_confirmation_choice(
+            shell_block,
+            lambda selected_index: _render_home(
+                status=status_view,
+                prompt_lane=prompt_choice_bar(
+                    question,
+                    options,
+                    selected_index=selected_index,
+                    hint="Click Enter when confirmed",
+                ),
+            ),
+            option_count=len(options),
+            default_index=1,
+        )
+        return selected == 0
+
+    def _update_shell(
+        *,
+        prompt: str = "",
+        status: RenderableType | None = None,
+        prompt_lane: RenderableType | None = None,
+        cursor_pos: int = 0,
+        line_count: int = 0,
+        show_paste_summary: bool = False,
+        paste_word_count: int = 0,
+        paste_line_count: int = 0,
+    ) -> None:
+        if shell_block is None:
+            return
+        shell_block.update(_render_home(
+            prompt=prompt,
+            status=status,
+            prompt_lane=prompt_lane,
+            cursor_pos=cursor_pos,
+            line_count=line_count,
+            show_paste_summary=show_paste_summary,
+            paste_word_count=paste_word_count,
+            paste_line_count=paste_line_count,
+        ))
+
     try:
         while True:
             if shell_block is None:
                 shell_block = _PinnedShellBlock()
-                shell_block.mount(_shell_home_renderable(
-                    recent_activity,
-                    status=status_renderable,
-                    launch_target=session_state.launch_label,
-                    show_prompt_lane=True,
-                ))
+                shell_block.mount(_render_home(status=status_renderable))
             else:
-                shell_block.update(_shell_home_renderable(
-                    recent_activity,
-                    status=status_renderable,
-                    launch_target=session_state.launch_label,
-                    show_prompt_lane=True,
-                ))
+                _update_shell(status=status_renderable)
             try:
-                raw = _read_pinned_prompt_line(shell_block, recent_activity, session_state, status=status_renderable)
+                raw = _read_pinned_prompt_line(
+                    shell_block,
+                    recent_activity,
+                    session_state,
+                    status=status_renderable,
+                    submitted_prompt=submitted_prompt,
+                    submitted_prompt_state=submitted_prompt_state,
+                )
             except (EOFError, KeyboardInterrupt):
                 _release_shell_block()
                 console.print()
@@ -1893,21 +2413,15 @@ def _interactive_shell() -> None:
             if not raw:
                 continue
 
+            submitted_prompt = raw
+            submitted_prompt_state = "running"
+
             if raw.startswith("/"):
                 command_log = SubprocessLog()
                 command_log.add(raw.split()[0], "processing request", "running")
 
                 def _refresh_inline(renderable: RenderableType | None) -> None:
-                    if shell_block is None:
-                        return
-                    shell_block.update(_shell_home_renderable(
-                        recent_activity,
-                        prompt="",
-                        submitted=False,
-                        status=renderable,
-                        launch_target=session_state.launch_label,
-                        show_prompt_lane=True,
-                    ))
+                    _update_shell(status=renderable)
 
                 _refresh_inline(_ShellSubprocessView(session_state, command_log=command_log))
                 should_continue, status_renderable = _handle_shell_command(
@@ -1917,6 +2431,8 @@ def _interactive_shell() -> None:
                     subprocess_log=command_log,
                     refresh_status=_refresh_inline,
                 )
+                submitted_prompt_state = _submitted_prompt_state_from_log(command_log)
+                _update_shell(status=status_renderable)
                 if not should_continue:
                     break
                 continue
@@ -1924,82 +2440,70 @@ def _interactive_shell() -> None:
             agent_name = session_state.launch_target_name
             agent_path = session_state.launch_target_path
             if not agent_path:
-                # Display as subprocess item instead of breaking out of UI
                 error_log = SubprocessLog()
-                error_log.add("prompt", f"submitted '{raw[:40]}...'" if len(raw) > 40 else f"submitted '{raw}'", "complete")
+                error_log.add("prompt", f"submitted '{prompt_preview(raw, limit=40)}'", "complete")
                 error_log.add("launch target", "no agent configured", "failed")
-                shell_block.update(_shell_home_renderable(
-                    recent_activity,
-                    prompt=raw,
-                    submitted=True,
-                    spinner="✕",
-                    status=_ShellSubprocessView(session_state, command_log=error_log),
-                    launch_target=session_state.launch_label,
-                    show_prompt_lane=True,
-                ))
+                status_renderable = _ShellSubprocessView(
+                    session_state,
+                    command_log=error_log,
+                    include_overview=False,
+                )
+                submitted_prompt_state = "failed"
+                _update_shell(status=status_renderable)
                 recent_activity.append(_recent_line("prompt held until a launch target is selected"))
                 continue
 
+            def _refresh_inline(renderable: RenderableType | None) -> None:
+                _update_shell(status=renderable)
+
+            prompt_log: SubprocessLog
             if get_enabled():
-                findings, score = _screen_prompt_with_motion(
+                findings, _score, prompt_log = _screen_prompt_with_motion(
                     raw,
                     target=os.getcwd(),
                     agent_name=agent_name or "ai agent",
-                    recent_activity=recent_activity,
+                    session_state=session_state,
+                    refresh_shell=_refresh_inline,
                 )
                 if findings:
-                    # Display blocked prompt as subprocess item within UI
-                    from rich.table import Table
-
-                    blocked_log = SubprocessLog()
-                    blocked_log.add("prompt", f"submitted '{prompt_preview(raw, limit=40)}'", "complete")
-                    blocked_log.add("shield", "screening prompt", "complete")
-                    blocked_log.add("semantic scan", "comparing anchors", "complete")
-                    blocked_log.add("launch target", "blocked - risky content detected", "failed")
-
-                    # Build findings table for display
-                    findings_table = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
-                    findings_table.add_column(width=12, no_wrap=True)
-                    findings_table.add_column()
-                    for finding in findings:
-                        color = SEVERITY_COLOR.get(finding.severity, "white")
-                        icon = SEVERITY_ICON.get(finding.severity, "◆")
-                        findings_table.add_row(
-                            f"[{color}]{icon}  {finding.severity.lower()}[/{color}]",
-                            f"[dim]{finding.description.lower()}[/dim]",
-                        )
-
-                    blocked_body = Group(
-                        Text.from_markup(f"[bold {ERROR}]Prompt blocked[/bold {ERROR}]"),
-                        Text.from_markup("[dim]Canary found risky content before handoff.[/dim]"),
-                        Text(""),
-                        Text.from_markup(f"[bold {ACCENT}]findings[/bold {ACCENT}]"),
-                        findings_table,
+                    confirmed, status_renderable = _confirm_risky_shell_handoff(
+                        findings,
+                        prompt_log=prompt_log,
+                        agent_name=agent_name or "ai agent",
+                        session_state=session_state,
+                        refresh_shell=_refresh_inline,
+                        confirm_callback=_confirm_in_prompt_box,
                     )
-
-                    shell_block.update(_shell_home_renderable(
-                        recent_activity,
-                        prompt=raw,
-                        submitted=True,
-                        spinner="✕",
-                        status=_ShellSubprocessView(session_state, command_log=blocked_log, body=blocked_body),
-                        launch_target=session_state.launch_label,
-                        show_prompt_lane=True,
-                    ))
-                    recent_activity.append(_recent_line("blocked a prompt during screening"))
-                    continue
-                recent_activity.append(_recent_line(f"screened prompt for {agent_name}"))
+                    _update_shell(status=status_renderable)
+                    if not confirmed:
+                        submitted_prompt_state = "failed"
+                        recent_activity.append(_recent_line("blocked a prompt during screening"))
+                        continue
+                    recent_activity.append(_recent_line(f"confirmed risky prompt handoff to {agent_name}"))
+                else:
+                    recent_activity.append(_recent_line(f"screened prompt for {agent_name}"))
             else:
+                prompt_log = SubprocessLog()
+                preview = prompt_preview(raw, limit=34)
+                prompt_log.add("prompt", f"submitted '{preview}'", "complete")
+                prompt_log.add("shield", "screening disabled", "complete")
+                prompt_log.add("launch target", f"waiting to hand off into {agent_name or 'ai agent'}", "pending")
+                status_renderable = _ShellSubprocessView(
+                    session_state,
+                    command_log=prompt_log,
+                    include_overview=False,
+                )
+                _update_shell(status=status_renderable)
                 recent_activity.append(_recent_line(f"forwarded prompt to {agent_name} with screening off"))
 
-            animate_pipeline(
-                raw,
-                agent=agent_name or "ai agent",
-                target=os.getcwd(),
-                audit_active=session_state.audit_active,
-                watcher_running=session_state.watch_active,
-                watch_target=session_state.watch_target,
+            status_renderable = _animate_agent_handoff_in_shell(
+                prompt_log,
+                agent_name=agent_name or "ai agent",
+                session_state=session_state,
+                refresh_shell=_refresh_inline,
             )
+            submitted_prompt_state = "complete"
+            _update_shell(status=status_renderable)
             _run_selected_agent(
                 agent_path,
                 raw,
@@ -2228,7 +2732,13 @@ def _resolve_watch_agent() -> tuple[str | None, str | None]:
     return _resolve_primary_agent()
 
 
-def _collect_watch_prompt(target: str, preset: str | None, *, agent_name: str) -> str | None:
+def _collect_watch_prompt(
+    target: str,
+    preset: str | None,
+    *,
+    agent_name: str,
+    allow_risky_override: bool = True,
+) -> str | None:
     prompt_text = preset.strip() if preset else None
     interactive = preset is None
 
@@ -2259,7 +2769,11 @@ def _collect_watch_prompt(target: str, preset: str | None, *, agent_name: str) -
         if not findings:
             return prompt_text
 
-        fail("blocked", "edit the prompt and try again")
+        if allow_risky_override and _confirm("continue?"):
+            return prompt_text
+
+        detail = "edit the prompt or enter y to hand it off anyway" if allow_risky_override else "edit the prompt and try again"
+        fail("blocked", detail)
         console.print()
         if not interactive:
             return None
@@ -2274,7 +2788,12 @@ def _launch_watch_session(target: str, *, idle: int, continuous: bool, prompt: s
         console.print()
         raise SystemExit(127)
 
-    prompt_text = _collect_watch_prompt(target, prompt, agent_name=agent_name or "ai agent")
+    prompt_text = _collect_watch_prompt(
+        target,
+        prompt,
+        agent_name=agent_name or "ai agent",
+        allow_risky_override=not check_only,
+    )
     if not prompt_text:
         note("watch cancelled")
         console.print()

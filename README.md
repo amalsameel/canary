@@ -1,6 +1,6 @@
 # canary
 
-Canary is a terminal safety layer for AI agent sessions. The default experience is now the `canary` shell itself: a persistent homescreen with screening on by default, slash commands for Canary controls, and a protected prompt lane that hands safe requests into a guarded agent launch.
+Canary is a terminal safety layer for AI agent sessions. The default experience is now the `canary` shell itself: a persistent homescreen with screening on by default, slash commands for Canary controls, and a protected prompt lane that screens every handoff and asks before sending risky requests into a guarded agent launch.
 
 Today, Canary is built around local IBM Granite plus protected `claude` and `codex` launch shims. Claude still has the deepest session integration because Canary can install Claude hooks, while `/audit` can tail compatible local transcript hints from both Claude and Codex during a live session.
 

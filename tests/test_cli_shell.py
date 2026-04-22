@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from canary.cli import SHELL_COMMANDS, _ANSI_SEARCH_BG, _AuditShellBody, _PinnedShellBlock, _ShellSubprocessView, _audit_dashboard_renderable, _discover_active_transcripts, _editor_suggestion_lines, _handle_shell_command, _launch_agent_terminal, _launch_audit_terminal, _launch_watch_session, _run_selected_agent, _searchable_entries, _shell_home_renderable, _slash_command_matches
+from canary.cli import SHELL_COMMANDS, _ANSI_SEARCH_BG, _AuditShellBody, _PinnedShellBlock, _PromptBufferState, _PromptInputParser, _ShellSubprocessView, _apply_prompt_escape_sequence, _audit_dashboard_renderable, _collect_watch_prompt, _confirm_risky_shell_handoff, _discover_active_transcripts, _editor_suggestion_lines, _handle_shell_command, _launch_agent_terminal, _launch_audit_terminal, _launch_watch_session, _run_selected_agent, _searchable_entries, _shell_home_renderable, _slash_command_matches, _update_choice_selection
 from canary.frontend import ShellSessionState
-from canary.ui import SEARCH_SURFACE, SURFACE, SubprocessLog, _glimmer_indices
+from canary.ui import ACCENT, SEARCH_SURFACE, SURFACE, SubprocessLog, WHITE, prompt_choice_bar, _glimmer_indices
 
 
 def _strip_ansi(text: str) -> str:
@@ -85,6 +85,41 @@ def test_shell_home_renderable_keeps_prompt_and_suggestions_in_one_scene():
     assert "/agent" in text
 
 
+def test_shell_home_renderable_removes_plain_text_screens_header_copy():
+    renderable = _shell_home_renderable(
+        ["09:00  ·  screening enabled"],
+        launch_target="codex",
+        prompt="/agent",
+        show_prompt_lane=True,
+    )
+    output = io.StringIO()
+    render_console = Console(file=output, force_terminal=True, width=120)
+
+    render_console.print(renderable)
+    text = _strip_ansi(output.getvalue())
+
+    assert "plain text screens before handoff" not in text
+
+
+def test_shell_home_renderable_places_latest_submission_above_status_and_input():
+    renderable = _shell_home_renderable(
+        ["09:00  ·  screening enabled"],
+        launch_target="codex",
+        prompt="/agent claude",
+        submitted_prompt="fix login flow",
+        submitted_prompt_state="running",
+        status="status block",
+        show_prompt_lane=True,
+    )
+    output = io.StringIO()
+    render_console = Console(file=output, force_terminal=True, width=120)
+
+    render_console.print(renderable)
+    text = _strip_ansi(output.getvalue())
+
+    assert text.index("fix login flow") < text.index("status block") < text.rindex("/agent claude")
+
+
 def test_pinned_shell_block_updates_in_place():
     stream = io.StringIO()
     block = _PinnedShellBlock(stream=stream, width=80, color_system="truecolor")
@@ -100,6 +135,190 @@ def test_pinned_shell_block_updates_in_place():
     assert output.count("\x1b[H\x1b[2J") == 2
     assert output.count("\x1b[2K") == 4
     assert output.endswith("\x1b[?1049l")
+
+
+def test_prompt_buffer_state_inserts_at_cursor():
+    state = _PromptBufferState()
+
+    assert state.insert_text("abcd") is True
+    assert state.move_left() is True
+    assert state.move_left() is True
+    assert state.insert_text("XY") is True
+
+    assert state.text == "abXYcd"
+    assert state.cursor_pos == 4
+
+
+def test_prompt_buffer_state_summarizes_large_paste():
+    state = _PromptBufferState()
+
+    assert state.insert_text("word " * 150, source="paste") is True
+
+    assert state.show_paste_summary is True
+    assert state.paste_word_count == 150
+    assert state.paste_line_count == 1
+
+
+def test_prompt_escape_sequence_supports_navigation_and_delete():
+    state = _PromptBufferState(list("abcd"), cursor_pos=4)
+
+    assert _apply_prompt_escape_sequence(state, "[D") is True
+    assert state.cursor_pos == 3
+    assert _apply_prompt_escape_sequence(state, "[H") is True
+    assert state.cursor_pos == 0
+    assert _apply_prompt_escape_sequence(state, "[3~") is True
+
+    assert state.text == "bcd"
+    assert state.cursor_pos == 0
+
+
+def test_prompt_input_parser_handles_batched_text():
+    parser = _PromptInputParser()
+
+    assert parser.feed("ab") == [("text", "a"), ("text", "b")]
+
+
+def test_prompt_input_parser_decodes_navigation_sequence_across_chunks():
+    parser = _PromptInputParser()
+
+    assert parser.feed("\x1b") == []
+    assert parser.feed("[D") == [("escape", "[D")]
+
+
+def test_prompt_input_parser_decodes_vertical_navigation_sequence_across_chunks():
+    parser = _PromptInputParser()
+
+    assert parser.feed("\x1b") == []
+    assert parser.feed("[A") == [("escape", "[A")]
+
+
+def test_prompt_input_parser_collects_bracketed_paste_across_chunks():
+    parser = _PromptInputParser()
+
+    assert parser.feed("\x1b[200~fix") == []
+    assert parser.feed("\nlogin") == []
+    assert parser.feed("\x1b[201~") == [("paste", "fix\nlogin")]
+
+
+def test_update_choice_selection_supports_arrow_keys_and_number_shortcuts():
+    assert _update_choice_selection(1, 2, escape="[A") == 0
+    assert _update_choice_selection(0, 2, escape="[C") == 1
+    assert _update_choice_selection(0, 2, text="2") == 1
+    assert _update_choice_selection(1, 2, text="1") == 0
+
+
+def test_prompt_choice_bar_highlights_selected_option_in_green():
+    renderable = prompt_choice_bar(
+        "continue?",
+        ["Yes", "No"],
+        selected_index=0,
+        hint="Click Enter when confirmed",
+    )
+    option_row = renderable.renderables[2]
+
+    assert option_row.plain.strip().startswith("Yes")
+    assert option_row.plain.strip().endswith("No")
+    assert any(
+        span.style == f"bold {ACCENT} on {SURFACE}"
+        and option_row.plain[span.start:span.end] == "Yes"
+        for span in option_row.spans
+    )
+    assert any(
+        span.style == f"bold {WHITE} on {SURFACE}"
+        and option_row.plain[span.start:span.end] == "No"
+        for span in option_row.spans
+    )
+
+    output = io.StringIO()
+    render_console = Console(file=output, force_terminal=True, width=80, color_system="truecolor")
+    render_console.print(renderable)
+    text = output.getvalue()
+
+    assert "continue?" in _strip_ansi(text)
+    assert "Yes" in _strip_ansi(text)
+    assert "No" in _strip_ansi(text)
+
+
+def test_confirm_risky_shell_handoff_allows_confirmed_prompt(monkeypatch):
+    state = ShellSessionState(launch_target_name="codex", launch_target_path="/tmp/codex")
+    prompt_log = SubprocessLog(animated=False)
+    prompt_log.add("prompt", "submitted 'fix auth'", "complete")
+    prompt_log.add("shield", "prompt cleared", "complete")
+    prompt_log.add("semantic scan", "anchors compared", "complete")
+    prompt_log.add("launch target", "waiting to hand off into codex", "pending")
+    finding = SimpleNamespace(severity="HIGH", description="Credential handling")
+    refreshed = []
+
+    monkeypatch.setattr("canary.cli._confirm", lambda prompt, default="n": True)
+
+    allowed, renderable = _confirm_risky_shell_handoff(
+        [finding],
+        prompt_log=prompt_log,
+        agent_name="codex",
+        session_state=state,
+        refresh_shell=lambda view: refreshed.append(view),
+    )
+
+    assert allowed is True
+    assert refreshed
+    assert renderable is not None
+    assert any(name == "shield" and detail == "risky prompt approved" and status == "complete" for name, detail, status, _ in prompt_log.items)
+    assert any(name == "launch target" and "user confirmed risky handoff into codex" in detail and status == "pending" for name, detail, status, _ in prompt_log.items)
+
+
+def test_confirm_risky_shell_handoff_blocks_declined_prompt(monkeypatch):
+    state = ShellSessionState(launch_target_name="codex", launch_target_path="/tmp/codex")
+    prompt_log = SubprocessLog(animated=False)
+    prompt_log.add("prompt", "submitted 'fix auth'", "complete")
+    prompt_log.add("shield", "prompt cleared", "complete")
+    prompt_log.add("semantic scan", "anchors compared", "complete")
+    prompt_log.add("launch target", "waiting to hand off into codex", "pending")
+    finding = SimpleNamespace(severity="HIGH", description="Credential handling")
+
+    monkeypatch.setattr("canary.cli._confirm", lambda prompt, default="n": False)
+
+    allowed, renderable = _confirm_risky_shell_handoff(
+        [finding],
+        prompt_log=prompt_log,
+        agent_name="codex",
+        session_state=state,
+        refresh_shell=lambda _: None,
+    )
+
+    assert allowed is False
+    assert renderable is not None
+    assert any(name == "shield" and detail == "blocked risky prompt" and status == "complete" for name, detail, status, _ in prompt_log.items)
+    assert any(name == "launch target" and detail == "blocked - risky content detected" and status == "failed" for name, detail, status, _ in prompt_log.items)
+
+    output = io.StringIO()
+    render_console = Console(file=output, force_terminal=True, width=160)
+    render_console.print(renderable)
+    text = _strip_ansi(output.getvalue())
+
+    assert "Prompt blocked" in text
+    assert "Canary kept the risky prompt from reaching the agent." in text
+
+
+def test_collect_watch_prompt_accepts_risky_preset_when_confirmed(monkeypatch):
+    finding = SimpleNamespace(severity="HIGH", description="Credential handling")
+
+    monkeypatch.setattr("canary.cli._review_prompt", lambda *args, **kwargs: ([finding], 80))
+    monkeypatch.setattr("canary.cli._confirm", lambda prompt, default="n": True)
+
+    assert _collect_watch_prompt(".", "fix auth", agent_name="codex") == "fix auth"
+
+
+def test_collect_watch_prompt_blocks_risky_preset_when_declined(monkeypatch):
+    finding = SimpleNamespace(severity="HIGH", description="Credential handling")
+    failures = []
+
+    monkeypatch.setattr("canary.cli._review_prompt", lambda *args, **kwargs: ([finding], 80))
+    monkeypatch.setattr("canary.cli._confirm", lambda prompt, default="n": False)
+    monkeypatch.setattr("canary.cli.fail", lambda text, detail=None: failures.append((text, detail)))
+    monkeypatch.setattr("canary.cli.console.print", lambda *args, **kwargs: None)
+
+    assert _collect_watch_prompt(".", "fix auth", agent_name="codex") is None
+    assert failures == [("blocked", "edit the prompt or enter y to hand it off anyway")]
 
 
 def test_launch_audit_terminal_is_disabled_when_env_off(monkeypatch):
@@ -199,7 +418,7 @@ def test_watch_session_runs_inline_in_current_terminal(monkeypatch):
     runs = []
 
     monkeypatch.setattr("canary.cli._resolve_watch_agent", lambda: ("codex", "/tmp/codex"))
-    monkeypatch.setattr("canary.cli._collect_watch_prompt", lambda target, prompt, agent_name: "fix login flow")
+    monkeypatch.setattr("canary.cli._collect_watch_prompt", lambda target, prompt, agent_name, **kwargs: "fix login flow")
     monkeypatch.setattr("canary.cli._watch_already_running", lambda: None)
     monkeypatch.setattr("canary.cli._spawn_background_watch", lambda target, idle, continuous: SimpleNamespace(pid=999))
     monkeypatch.setattr("canary.cli.animate_pipeline", lambda *args, **kwargs: None)

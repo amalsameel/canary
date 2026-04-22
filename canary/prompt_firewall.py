@@ -22,7 +22,7 @@ class PromptFinding:
 # Known-format secrets. Order matters: most specific first.
 # ---------------------------------------------------------------------------
 SECRET_PATTERNS: list[tuple[str, str, str, int]] = [
-    (r'sk-[A-Za-z0-9_\-]{20,}',              'OpenAI / Anthropic API key',         'CRITICAL', 40),
+    (r'sk-[A-Za-z0-9_\-]{20,}',              'API key',                            'CRITICAL', 40),
     (r'ghp_[A-Za-z0-9]{30,40}',              'GitHub personal access token',       'CRITICAL', 40),
     (r'gh[osu]_[A-Za-z0-9]{30,40}',          'GitHub OAuth/server/user token',     'CRITICAL', 40),
     (r'glpat-[A-Za-z0-9_\-]{20,}',           'GitLab personal access token',       'CRITICAL', 40),

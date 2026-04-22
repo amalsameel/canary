@@ -1188,3 +1188,31 @@ This file is maintained by AI coding agents. Every session must:
 ### Files modified
 - `tests/test_cli_shell.py` (fixed test assertions)
 - `docs/CHANGELOG.md` (added this entry)
+
+---
+
+## [2026-04-21 19:54] Model: GPT-5 Codex | Status: COMPLETED
+
+### Completed this session
+- Changed risky prompt handoff behavior so Canary now offers `continue? [y/n]` before forwarding flagged prompts into the selected agent instead of always hard-blocking them
+- Added a dedicated shell confirmation path in `canary/cli.py` so the interactive homescreen shows the risky findings, waits for a `y/n` decision, and only blocks when the user declines
+- Updated `canary watch` prompt collection to allow the same risky-prompt override before launch while keeping `--check-only` on the non-handoff path
+- Updated protected launch wrappers in `canary/wrappers.py` so guarded `claude` / `codex` shims also ask before forwarding risky prompts
+- Added regression coverage for shell risky-handoff confirmation, watch prompt collection, and wrapper prompt gating
+- Updated the top-level README copy to reflect that Canary screens handoffs and asks before sending risky prompts onward
+
+### Left incomplete / known issues
+- `canary prompt --check-only` still uses its legacy confirmation flow even though no agent handoff occurs; that behavior was left unchanged in this pass
+- Interactive follow-up prompts typed inside a running agent TUI are still outside this launch-time confirmation path
+
+### Next session should start with
+- Decide whether non-handoff review modes such as `canary prompt --check-only` should keep prompting or simply report findings without asking for `y/n`
+- If the user wants deeper parity, extend the same explicit override UX to any remaining launch-time paths that still rely on older confirmation copy
+
+### Files modified
+- `README.md`
+- `canary/cli.py`
+- `canary/wrappers.py`
+- `tests/test_cli_shell.py`
+- `tests/test_wrappers.py`
+- `docs/CHANGELOG.md`
